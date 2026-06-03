@@ -303,6 +303,7 @@ const state = {
   isSaving: false,
   currentUser: null,
   errorMessage: "",
+  authNotice: "",
   pendingProductRowId: null,
   pendingSalesProductRowId: null,
   pendingConversion: null,
@@ -731,7 +732,7 @@ function createSupabaseDatabase(client, isConfigured) {
           .from("sales_documents")
           .update({ status: "CANCELLED" })
           .eq("id", id)
-          .neq("status", "CONFIRMED"),
+          .neq("status", "CANCELLED"),
         "Nepavyko atšaukti pardavimo dokumento.",
       );
     },
@@ -1281,6 +1282,7 @@ async function signInWithPassword(email, password) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw new Error(authErrorMessage(error));
     state.currentUser = data.user;
+    state.authNotice = "";
     await reloadAllData();
     setToast("Prisijungta sėkmingai.");
   });
@@ -1300,6 +1302,7 @@ async function signOut() {
     state.stockReservations = [];
     state.page = "products";
     state.modal = null;
+    state.authNotice = "Atsijungėte. Prisijunkite iš naujo, kad matytumėte inventoriaus sistemą.";
     setToast("Atsijungta. Inventoriaus puslapiai paslėpti.");
   });
 }
@@ -1472,6 +1475,7 @@ function renderLoginPage() {
     <section class="document-panel auth-panel">
       <form class="auth-form" data-form="auth-login">
         ${state.errorMessage ? `<div class="auth-message">${escapeHtml(state.errorMessage)}</div>` : ""}
+        ${state.authNotice ? `<div class="auth-message success-message">${escapeHtml(state.authNotice)}</div>` : ""}
         <label class="form-field">
           <span class="label">El. paštas</span>
           <input class="input" name="email" type="email" autocomplete="email" required ${isSubmitting ? "disabled" : ""} />
@@ -1803,7 +1807,7 @@ function renderStockHistoryRows(history, compact = false) {
         <tr>
           <td>${formatDateTime(entry.date)}</td>
           <td>
-            <button class="link-button" data-action="view-document" data-id="${entry.documentId}">${escapeHtml(entry.documentNumber)}</button>
+            <button class="link-button" data-action="${stockMovementDocumentAction(entry)}" data-id="${entry.documentId}">${escapeHtml(entry.documentNumber)}</button>
           </td>
           ${
             compact
@@ -1818,6 +1822,12 @@ function renderStockHistoryRows(history, compact = false) {
       `,
     )
     .join("");
+}
+
+function stockMovementDocumentAction(entry) {
+  const referenceType = String(entry.referenceType ?? "").toUpperCase();
+  const isSalesMovement = referenceType.includes("SALES") || state.salesDocuments.some((document) => idsEqual(document.id, entry.documentId));
+  return isSalesMovement ? "view-sales-document" : "view-document";
 }
 
 function renderCustomersPage() {
@@ -2274,7 +2284,7 @@ function renderSalesPage() {
               <th>Valiuta</th>
               <th>Atsakingas</th>
               <th>Sukūrimo data</th>
-              <th class="actions-cell">Veiksmai</th>
+              <th class="actions-cell sales-actions-cell">Veiksmai</th>
             </tr>
           </thead>
           <tbody>
@@ -2321,28 +2331,33 @@ function renderSalesDocumentRow(document) {
       <td>${escapeHtml(document.currency)}</td>
       <td>${escapeHtml(document.responsibleEmployee || "-")}</td>
       <td>${formatDateTime(document.createdAt)}</td>
-      <td class="actions-cell">${renderSalesActionsMenu(document)}</td>
+      <td class="actions-cell sales-actions-cell">${renderSalesActionsMenu(document)}</td>
     </tr>
   `;
 }
 
 function renderSalesActionsMenu(document) {
+  const canCancel = canCancelSalesDocument(document);
   return `
-    <details class="row-menu">
-      <summary>⋯</summary>
-      <div class="row-menu-list">
-        <button data-action="view-sales-document" data-id="${document.id}">Peržiūrėti</button>
-        ${document.status === "DRAFT" ? `<button data-action="edit-sales-document" data-id="${document.id}">Redaguoti</button>` : ""}
-        <button data-action="copy-sales-document" data-id="${document.id}">Kopijuoti</button>
-        ${CONVERSION_TARGETS[document.type].map((target) => `<button data-action="convert-sales-document" data-id="${document.id}" data-target-type="${target}">Konvertuoti į ${salesTypeLabel(target)}</button>`).join("")}
-        <button data-action="print-sales-document" data-id="${document.id}">Atsisiųsti PDF</button>
-        ${document.type === "DELIVERY_NOTE" && document.status === "DRAFT" ? `<button data-action="confirm-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Patvirtinti važtaraštį</button>` : ""}
-        ${document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED" ? `<button data-action="cancel-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Atšaukti važtaraštį</button>` : ""}
-        ${document.status !== "CANCELLED" && document.status !== "CONFIRMED" ? `<button data-action="cancel-sales-document" data-id="${document.id}">Atšaukti</button>` : ""}
-        ${document.status === "DRAFT" ? `<button class="danger-menu" data-action="delete-sales-draft" data-id="${document.id}">Ištrinti juodraštį</button>` : ""}
-      </div>
-    </details>
+    <div class="sales-row-actions">
+      <button class="link-button" data-action="view-sales-document" data-id="${document.id}">Peržiūrėti</button>
+      ${document.status === "DRAFT" ? `<button class="link-button" data-action="edit-sales-document" data-id="${document.id}">Redaguoti</button>` : ""}
+      <button class="link-button" data-action="copy-sales-document" data-id="${document.id}">Kopijuoti</button>
+      ${CONVERSION_TARGETS[document.type].map((target) => `<button class="link-button" data-action="convert-sales-document" data-id="${document.id}" data-target-type="${target}">Į ${salesTypeLabel(target)}</button>`).join("")}
+      <button class="link-button" data-action="print-sales-document" data-id="${document.id}">PDF</button>
+      ${document.type === "DELIVERY_NOTE" && document.status === "DRAFT" ? `<button class="link-button" data-action="confirm-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Patvirtinti</button>` : ""}
+      ${document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED" ? `<button class="link-button danger-link" data-action="cancel-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Atšaukti važtaraštį</button>` : ""}
+      ${canCancel ? `<button class="link-button danger-link" data-action="cancel-sales-document" data-id="${document.id}">Atšaukti</button>` : ""}
+      ${document.status === "DRAFT" ? `<button class="link-button danger-link" data-action="delete-sales-draft" data-id="${document.id}">Ištrinti</button>` : ""}
+    </div>
   `;
+}
+
+function canCancelSalesDocument(document) {
+  if (!document || document.status === "CANCELLED") return false;
+  if (Number(document.paidAmount) > 0) return false;
+  if (document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED") return false;
+  return document.status === "DRAFT" || document.type === "ORDER";
 }
 
 function filteredSalesDocuments() {
@@ -2595,8 +2610,9 @@ function renderSalesDocumentDetailPage() {
       `<div class="form-actions">
         <button class="button secondary" data-action="back-to-sales">Grįžti į pardavimus</button>
         ${document.status === "DRAFT" ? `<button class="button" data-action="edit-sales-document" data-id="${document.id}">Redaguoti</button>` : ""}
-        <button class="button secondary" data-action="register-payment" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Registruoti apmokėjimą</button>
-        ${document.type === "ORDER" && document.status !== "CANCELLED" ? `<button class="button secondary" data-action="reserve-sales-document" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Rezervuoti prekes</button>` : ""}
+        <button class="button secondary" data-action="register-payment" data-id="${document.id}" ${!state.salesAdvancedReady || document.status === "CANCELLED" || document.debt <= 0 ? "disabled" : ""}>Registruoti apmokėjimą</button>
+        ${document.type === "ORDER" && document.status === "DRAFT" ? `<button class="button secondary" data-action="reserve-sales-document" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Rezervuoti prekes</button>` : ""}
+        ${canCancelSalesDocument(document) ? `<button class="button secondary" data-action="cancel-sales-document" data-id="${document.id}">Atšaukti dokumentą</button>` : ""}
         ${document.type === "DELIVERY_NOTE" && document.status === "DRAFT" ? `<button class="button" data-action="confirm-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Patvirtinti važtaraštį</button>` : ""}
         ${document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED" ? `<button class="button danger" data-action="cancel-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Atšaukti važtaraštį</button>` : ""}
       </div>`,
@@ -3114,7 +3130,7 @@ function renderPaymentModal() {
   const document = findSalesDocument(payment.documentId);
   return `
     <div class="modal-backdrop" role="dialog" aria-modal="true">
-      <form class="modal small-modal" data-form="payment">
+      <form class="modal small-modal" data-form="payment" novalidate>
         <div class="modal-header">
           <h2>Registruoti apmokėjimą</h2>
           <button type="button" class="close-button" data-action="close-modal">×</button>
@@ -4267,7 +4283,10 @@ function validateCurrentSalesDocument() {
     }
     if (["ORDER", "DELIVERY_NOTE"].includes(doc.type)) {
       const product = state.products.find((item) => idsEqual(item.id, row.productId));
-      const freeStock = freeStockForProduct(product, doc.editingId);
+      const excludedReservationDocumentId = doc.type === "DELIVERY_NOTE" && doc.sourceDocumentId
+        ? doc.sourceDocumentId
+        : doc.editingId;
+      const freeStock = freeStockForProduct(product, excludedReservationDocumentId);
       if ((Number(row.quantity) || 0) > freeStock) {
         setToast(`${number} eilutėje nepakanka laisvo likučio. Laisva: ${formatNumber(freeStock)} ${row.unit}.`);
         return false;
@@ -4572,9 +4591,22 @@ function convertSalesDocument(sourceId, targetType) {
     dueDate: addDays(todayDate(), 14),
     reserveStock: targetType === "ORDER",
   };
+  state.salesDraft.rows = source.lines.map((line) => salesDraftRowFromLine(line));
   state.salesTab = targetType;
   state.page = "new-sales-document";
   render();
+}
+
+function salesDraftRowFromLine(line) {
+  const product = state.products.find((item) => idsEqual(item.id, line.productId));
+  return {
+    ...line,
+    rowId: crypto.randomUUID(),
+    currentStock: Number(product?.stock) || 0,
+    reservedStock: reservedQuantityForProduct(line.productId),
+    lookupMessage: "",
+    lookupMatches: [],
+  };
 }
 
 function salesDraftFromDocument(document) {
@@ -4591,12 +4623,7 @@ function salesDraftFromDocument(document) {
     responsibleEmployee: document.responsibleEmployee,
     notes: document.notes,
     reserveStock: false,
-    rows: document.lines.map((line) => ({
-      ...line,
-      rowId: crypto.randomUUID(),
-      lookupMessage: "",
-      lookupMatches: [],
-    })),
+    rows: document.lines.map((line) => salesDraftRowFromLine(line)),
   };
 }
 

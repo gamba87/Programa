@@ -459,6 +459,11 @@ tbody tr:last-child td {
   width: 250px;
 }
 
+.sales-actions-cell {
+  width: 420px;
+  min-width: 420px;
+}
+
 .action-group {
   display: flex;
   justify-content: flex-end;
@@ -490,6 +495,24 @@ tbody tr:last-child td {
 
 .danger-link:hover {
   background: #fecdca;
+}
+
+.sales-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sales-row-actions .link-button {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.sales-row-actions .link-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .plain-link {
@@ -988,6 +1011,12 @@ tbody tr:last-child td {
   background: var(--danger-soft);
   font-weight: 700;
   line-height: 1.45;
+}
+
+.auth-message.success-message {
+  border-color: #a6e3d6;
+  color: var(--accent-dark);
+  background: var(--accent-soft);
 }
 
 .auth-submit {
