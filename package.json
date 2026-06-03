@@ -1,0 +1,18 @@
+{
+  "name": "bathroom-inventory-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite outputs --host 127.0.0.1 --port 4173",
+    "build": "vite build outputs --outDir ../dist",
+    "lint": "node scripts/lint.mjs"
+  },
+  "dependencies": {
+    "@supabase/ssr": "latest",
+    "@supabase/supabase-js": "latest"
+  },
+  "devDependencies": {
+    "vite": "latest"
+  }
+}
