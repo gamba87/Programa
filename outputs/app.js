@@ -268,6 +268,7 @@ const state = {
   salesDocuments: [],
   stockReservations: [],
   salesSchemaReady: true,
+  salesAdvancedReady: false,
   selectedDocumentId: null,
   selectedProductId: null,
   selectedCustomerId: null,
@@ -358,7 +359,7 @@ function blankSalesDocument(type = state?.salesTab ?? "OFFER", date = todayDate(
     currency: "EUR",
     responsibleEmployee: state?.currentUser?.email ?? "",
     notes: "",
-    reserveStock: type === "ORDER",
+    reserveStock: type === "ORDER" && Boolean(state?.salesAdvancedReady),
     rows: [blankSalesRow()],
   };
 }
@@ -500,6 +501,11 @@ function persistState() {
   // Supabase is the persisted data store. This hook is kept empty for the existing render flow.
 }
 
+function isMissingOptionalSalesSchema(error) {
+  const message = String(error?.message ?? "").toLowerCase();
+  return error?.code === "42P01" || message.includes("does not exist") || message.includes("schema cache");
+}
+
 async function loadSalesBundle(db) {
   const [customers, documents, lines, payments, relations, reservations] = await Promise.all([
     db.from("customers").select("*").order("name", { ascending: true }),
@@ -511,14 +517,12 @@ async function loadSalesBundle(db) {
   ]);
 
   const results = [customers, documents, lines, payments, relations, reservations];
-  const missingSalesSchema = results.some((result) => {
-    const message = String(result.error?.message ?? "").toLowerCase();
-    return result.error && (result.error.code === "42P01" || message.includes("does not exist") || message.includes("schema cache"));
-  });
+  const missingSalesSchema = results.some((result) => result.error && isMissingOptionalSalesSchema(result.error));
 
   if (missingSalesSchema) {
     return {
       schemaReady: false,
+      advancedReady: false,
       customers: [],
       salesDocuments: [],
       stockReservations: [],
@@ -529,8 +533,14 @@ async function loadSalesBundle(db) {
     if (result.error) throw new Error(result.error.message || "Nepavyko įkelti pardavimų duomenų.");
   });
 
+  const advancedCheck = await db.rpc("generate_sales_document_number", {
+    p_document_type: "OFFER",
+    p_document_date: todayDate(),
+  });
+
   return {
     schemaReady: true,
+    advancedReady: !advancedCheck.error,
     customers: customers.data.map(fromDbCustomer),
     salesDocuments: documents.data.map((document) =>
       fromDbSalesDocument(
@@ -578,6 +588,7 @@ function createSupabaseDatabase(client, isConfigured) {
         salesDocuments: salesBundle.salesDocuments,
         stockReservations: salesBundle.stockReservations,
         salesSchemaReady: salesBundle.schemaReady,
+        salesAdvancedReady: salesBundle.advancedReady,
       };
     },
     async saveProduct(product) {
@@ -597,8 +608,24 @@ function createSupabaseDatabase(client, isConfigured) {
       return fromDbProduct(saved);
     },
     async deleteProduct(id) {
+      const db = ensureClient();
+      const salesUsage = await db
+        .from("sales_document_lines")
+        .select("id,sales_documents!inner(status,document_type)")
+        .eq("product_id", id)
+        .in("sales_documents.document_type", ["INVOICE", "DELIVERY_NOTE"])
+        .in("sales_documents.status", ["CONFIRMED", "PARTIALLY_PAID", "PAID"])
+        .limit(1);
+
+      if (salesUsage.error && !isMissingOptionalSalesSchema(salesUsage.error)) {
+        throw new Error(salesUsage.error.message || "Nepavyko patikrinti prekės pardavimo istorijos.");
+      }
+      if ((salesUsage.data ?? []).length) {
+        throw new Error("Prekės pašalinti negalima, nes ji turi pardavimo istoriją.");
+      }
+
       unwrap(
-        await ensureClient().from("products").update({ is_active: false }).eq("id", id),
+        await db.from("products").update({ is_active: false }).eq("id", id),
         "Nepavyko pašalinti prekės.",
       );
     },
@@ -964,7 +991,7 @@ function toDbSalesDocument(document, status = "DRAFT") {
     total: totals.total,
     paid_amount: 0,
   };
-  if (document.id) payload.document_number = document.number;
+  payload.document_number = document.number;
   return payload;
 }
 
@@ -1293,6 +1320,7 @@ async function reloadAllData() {
     state.salesDocuments = data.salesDocuments;
     state.stockReservations = data.stockReservations;
     state.salesSchemaReady = data.salesSchemaReady;
+    state.salesAdvancedReady = data.salesAdvancedReady;
     state.newDoc = blankDocument();
     state.salesDraft = blankSalesDocument(state.salesTab);
   } catch (error) {
@@ -1580,8 +1608,9 @@ function filteredProducts() {
 function renderProductsRows(products) {
   return products.length
     ? products
-        .map(
-          (product) => `
+        .map((product) => {
+          const deleteBlocked = Boolean(productDeleteBlockMessage(product));
+          return `
             <tr>
               <td><strong>${escapeHtml(product.article)}</strong></td>
               <td>${escapeHtml(product.name)}</td>
@@ -1596,12 +1625,12 @@ function renderProductsRows(products) {
                 <div class="action-group">
                   <button class="link-button" data-action="view-product" data-id="${product.id}">Peržiūrėti</button>
                   <button class="link-button" data-action="edit-product" data-id="${product.id}">✎ Redaguoti</button>
-                  <button class="link-button danger-link" data-action="delete-product" data-id="${product.id}">Pašalinti</button>
+                  <button class="link-button danger-link" data-action="delete-product" data-id="${product.id}" ${deleteBlocked ? `disabled title="${escapeHtml(productDeleteBlockMessage(product))}"` : ""}>Pašalinti</button>
                 </div>
               </td>
             </tr>
-          `,
-        )
+          `;
+        })
         .join("")
     : `<tr><td colspan="10"><div class="empty-state">Nerasta prekių pagal pasirinktą paiešką.</div></td></tr>`;
 }
@@ -1618,6 +1647,7 @@ function renderProductDetailPage() {
   const history = stockHistoryForProduct(product);
   const reserved = reservedQuantityForProduct(product.id);
   const freeStock = freeStockForProduct(product);
+  const deleteBlockedMessage = productDeleteBlockMessage(product);
 
   return `
     ${renderHeader(
@@ -1626,7 +1656,7 @@ function renderProductDetailPage() {
       `<div class="form-actions">
         <button class="button secondary" data-action="back-to-products">Grįžti į sąrašą</button>
         <button class="button" data-action="edit-product" data-id="${product.id}">Redaguoti</button>
-        <button class="button danger" data-action="delete-product" data-id="${product.id}">Pašalinti</button>
+        <button class="button danger" data-action="delete-product" data-id="${product.id}" ${deleteBlockedMessage ? `disabled title="${escapeHtml(deleteBlockedMessage)}"` : ""}>Pašalinti</button>
       </div>`,
     )}
     <section class="document-panel">
@@ -1724,7 +1754,7 @@ function stockHistoryForProduct(product) {
 }
 
 function productHasSalesHistory(product) {
-  return stockHistoryForProduct(product).some(isSaleStockMovement);
+  return stockHistoryForProduct(product).some(isSaleStockMovement) || salesDocumentsForProduct(product).some(isFinalizedSaleDocument);
 }
 
 function isSaleStockMovement(entry) {
@@ -1736,6 +1766,16 @@ function isSaleStockMovement(entry) {
 
   if (movementType === "RECEIPT_CANCEL" || action.includes("atšauk")) return false;
   return text.includes("sale") || text.includes("sold") || text.includes("pardav") || Number(entry.quantity) < 0;
+}
+
+function salesDocumentsForProduct(product) {
+  return state.salesDocuments.filter((document) =>
+    document.lines.some((line) => idsEqual(line.productId, product.id) || line.article === product.article),
+  );
+}
+
+function isFinalizedSaleDocument(document) {
+  return ["INVOICE", "DELIVERY_NOTE"].includes(document.type) && !["DRAFT", "CANCELLED"].includes(document.status);
 }
 
 function productDeleteBlockMessage(product) {
@@ -2156,6 +2196,7 @@ function renderSalesPage() {
       </div>`,
     )}
     ${renderSalesTabs()}
+    ${!state.salesAdvancedReady ? `<div class="auth-message">Įkeltos pagrindinės pardavimų lentelės. Juodraščiai veiks, bet rezervacijoms, važtaraščių patvirtinimui, atšaukimui ir mokėjimams dar reikia paleisti likusią SQL funkcijų dalį.</div>` : ""}
     <div class="toolbar document-toolbar">
       <div class="filter-row">
         <label class="search">
@@ -2286,8 +2327,8 @@ function renderSalesActionsMenu(document) {
         <button data-action="copy-sales-document" data-id="${document.id}">Kopijuoti</button>
         ${CONVERSION_TARGETS[document.type].map((target) => `<button data-action="convert-sales-document" data-id="${document.id}" data-target-type="${target}">Konvertuoti į ${salesTypeLabel(target)}</button>`).join("")}
         <button data-action="print-sales-document" data-id="${document.id}">Atsisiųsti PDF</button>
-        ${document.type === "DELIVERY_NOTE" && document.status === "DRAFT" ? `<button data-action="confirm-delivery-note" data-id="${document.id}">Patvirtinti važtaraštį</button>` : ""}
-        ${document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED" ? `<button data-action="cancel-delivery-note" data-id="${document.id}">Atšaukti važtaraštį</button>` : ""}
+        ${document.type === "DELIVERY_NOTE" && document.status === "DRAFT" ? `<button data-action="confirm-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Patvirtinti važtaraštį</button>` : ""}
+        ${document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED" ? `<button data-action="cancel-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Atšaukti važtaraštį</button>` : ""}
         ${document.status !== "CANCELLED" && document.status !== "CONFIRMED" ? `<button data-action="cancel-sales-document" data-id="${document.id}">Atšaukti</button>` : ""}
         ${document.status === "DRAFT" ? `<button class="danger-menu" data-action="delete-sales-draft" data-id="${document.id}">Ištrinti juodraštį</button>` : ""}
       </div>
@@ -2388,6 +2429,7 @@ function renderNewSalesDocumentPage() {
       "Dokumentas nekeičia sandėlio likučio, kol nepatvirtinamas važtaraštis.",
     )}
     <section class="document-panel">
+      ${!state.salesAdvancedReady ? `<div class="auth-message">Įkeltos tik pagrindinės pardavimų lentelės. Rezervacijoms, važtaraščių patvirtinimui ir mokėjimams dar reikia paleisti papildomą SQL funkcijų dalį.</div>` : ""}
       <div class="document-head sales-document-head">
         <label class="form-field">
           <span class="label">Dokumento tipas</span>
@@ -2430,7 +2472,7 @@ function renderNewSalesDocumentPage() {
         </label>
         ${doc.type === "ORDER" ? `
           <label class="checkbox-field sales-reserve-toggle">
-            <input type="checkbox" data-sales-doc-field="reserveStock" ${doc.reserveStock ? "checked" : ""} />
+            <input type="checkbox" data-sales-doc-field="reserveStock" ${doc.reserveStock ? "checked" : ""} ${!state.salesAdvancedReady ? "disabled" : ""} />
             <span>Rezervuoti prekes</span>
           </label>
         ` : ""}
@@ -2470,7 +2512,7 @@ function renderNewSalesDocumentPage() {
       <div class="totals-area">
         <div class="form-actions">
           <button class="button warning" data-action="save-sales-draft">Išsaugoti juodraštį</button>
-          ${doc.type === "DELIVERY_NOTE" ? `<button class="button" data-action="save-confirm-delivery-note">Patvirtinti važtaraštį</button>` : ""}
+          ${doc.type === "DELIVERY_NOTE" ? `<button class="button" data-action="save-confirm-delivery-note" ${!state.salesAdvancedReady ? "disabled" : ""}>Patvirtinti važtaraštį</button>` : ""}
         </div>
         <div class="totals">
           <div class="total-row"><span>Suma be PVM</span><strong data-sales-total="subtotal">${formatMoney(totals.subtotal)}</strong></div>
@@ -2544,10 +2586,10 @@ function renderSalesDocumentDetailPage() {
       `<div class="form-actions">
         <button class="button secondary" data-action="back-to-sales">Grįžti į pardavimus</button>
         ${document.status === "DRAFT" ? `<button class="button" data-action="edit-sales-document" data-id="${document.id}">Redaguoti</button>` : ""}
-        <button class="button secondary" data-action="register-payment" data-id="${document.id}">Registruoti apmokėjimą</button>
-        ${document.type === "ORDER" && document.status !== "CANCELLED" ? `<button class="button secondary" data-action="reserve-sales-document" data-id="${document.id}">Rezervuoti prekes</button>` : ""}
-        ${document.type === "DELIVERY_NOTE" && document.status === "DRAFT" ? `<button class="button" data-action="confirm-delivery-note" data-id="${document.id}">Patvirtinti važtaraštį</button>` : ""}
-        ${document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED" ? `<button class="button danger" data-action="cancel-delivery-note" data-id="${document.id}">Atšaukti važtaraštį</button>` : ""}
+        <button class="button secondary" data-action="register-payment" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Registruoti apmokėjimą</button>
+        ${document.type === "ORDER" && document.status !== "CANCELLED" ? `<button class="button secondary" data-action="reserve-sales-document" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Rezervuoti prekes</button>` : ""}
+        ${document.type === "DELIVERY_NOTE" && document.status === "DRAFT" ? `<button class="button" data-action="confirm-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Patvirtinti važtaraštį</button>` : ""}
+        ${document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED" ? `<button class="button danger" data-action="cancel-delivery-note" data-id="${document.id}" ${!state.salesAdvancedReady ? "disabled" : ""}>Atšaukti važtaraštį</button>` : ""}
       </div>`,
     )}
     <section class="document-panel">
@@ -3573,6 +3615,10 @@ function openCustomerModal(customer) {
 function openPaymentModal(documentId) {
   const document = findSalesDocument(documentId);
   if (!document) return;
+  if (!state.salesAdvancedReady) {
+    setToast("Mokėjimų registravimui reikia įkelti papildomą pardavimų SQL funkcijų dalį.");
+    return;
+  }
   state.modal = {
     type: "payment",
     data: {
@@ -3658,6 +3704,10 @@ function requestDeleteProduct(id) {
 }
 
 function requestSaveAndConfirmDeliveryNote() {
+  if (!state.salesAdvancedReady) {
+    setToast("Važtaraščio patvirtinimui reikia įkelti papildomą pardavimų SQL funkcijų dalį.");
+    return;
+  }
   if (!validateCurrentSalesDocument()) return;
   requestConfirmation({
     title: "Patvirtinti važtaraštį",
@@ -3668,6 +3718,10 @@ function requestSaveAndConfirmDeliveryNote() {
 }
 
 function requestConfirmDeliveryNote(id) {
+  if (!state.salesAdvancedReady) {
+    setToast("Važtaraščio patvirtinimui reikia įkelti papildomą pardavimų SQL funkcijų dalį.");
+    return;
+  }
   requestConfirmation({
     title: "Patvirtinti važtaraštį",
     message: "Ar tikrai norite patvirtinti važtaraštį? Sistema patikrins likučius ir sumažins juos vienoje duomenų bazės transakcijoje.",
@@ -3678,6 +3732,10 @@ function requestConfirmDeliveryNote(id) {
 }
 
 function requestCancelDeliveryNote(id) {
+  if (!state.salesAdvancedReady) {
+    setToast("Važtaraščio atšaukimui reikia įkelti papildomą pardavimų SQL funkcijų dalį.");
+    return;
+  }
   requestConfirmation({
     title: "Atšaukti važtaraštį",
     message: "Ar tikrai norite atšaukti važtaraštį? Prekės bus grąžintos į sandėlį, istorijos įrašai nebus trinami.",
@@ -3888,14 +3946,19 @@ function updateSalesDocumentField(input) {
   const previousType = state.salesDraft.type;
   const previousDate = state.salesDraft.date;
   state.salesDraft[field] = input.type === "checkbox" ? input.checked : input.value;
+  let shouldRender = false;
   if (field === "type") {
     state.salesTab = input.value;
-    state.salesDraft.reserveStock = input.value === "ORDER";
+    state.salesDraft.reserveStock = input.value === "ORDER" && state.salesAdvancedReady;
+    shouldRender = true;
   }
   if ((field === "type" && previousType !== input.value) || (field === "date" && previousDate.slice(0, 7) !== input.value.slice(0, 7))) {
     state.salesDraft.number = nextSalesDocumentNumber(state.salesDraft.type, state.salesDraft.date);
+    const numberInput = document.querySelector('[data-sales-doc-field="number"]');
+    if (numberInput) numberInput.value = state.salesDraft.number;
   }
-  render();
+  if (field === "reserveStock") shouldRender = true;
+  if (shouldRender) render();
 }
 
 function updateSalesDocumentRow(input) {
@@ -4171,6 +4234,10 @@ function validateCurrentSalesDocument() {
     setToast("Pridėkite bent vieną prekių eilutę.");
     return false;
   }
+  if (doc.type === "ORDER" && doc.reserveStock && !state.salesAdvancedReady) {
+    setToast("Rezervacijoms reikia įkelti papildomą pardavimų SQL funkcijų dalį.");
+    return false;
+  }
   for (const [index, row] of doc.rows.entries()) {
     const number = index + 1;
     if (!row.productId) {
@@ -4403,6 +4470,10 @@ async function cancelDeliveryNote(id) {
 async function reserveSalesDocument(id) {
   const document = findSalesDocument(id);
   if (!document) return;
+  if (!state.salesAdvancedReady) {
+    setToast("Rezervacijoms reikia įkelti papildomą pardavimų SQL funkcijų dalį.");
+    return;
+  }
   if (document.type !== "ORDER") {
     setToast("Rezervuoti galima tik užsakymo dokumente.");
     return;
