@@ -506,6 +506,15 @@ function isMissingOptionalSalesSchema(error) {
   return error?.code === "42P01" || message.includes("does not exist") || message.includes("schema cache");
 }
 
+function isPermissionDenied(error) {
+  const message = String(error?.message ?? "").toLowerCase();
+  return error?.code === "42501" || message.includes("permission denied");
+}
+
+function isOptionalSalesSchemaUnavailable(error) {
+  return isMissingOptionalSalesSchema(error) || isPermissionDenied(error);
+}
+
 async function loadSalesBundle(db) {
   const [customers, documents, lines, payments, relations, reservations] = await Promise.all([
     db.from("customers").select("*").order("name", { ascending: true }),
@@ -517,7 +526,7 @@ async function loadSalesBundle(db) {
   ]);
 
   const results = [customers, documents, lines, payments, relations, reservations];
-  const missingSalesSchema = results.some((result) => result.error && isMissingOptionalSalesSchema(result.error));
+  const missingSalesSchema = results.some((result) => result.error && isOptionalSalesSchemaUnavailable(result.error));
 
   if (missingSalesSchema) {
     return {
