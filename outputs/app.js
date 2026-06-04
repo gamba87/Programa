@@ -258,6 +258,22 @@ const sampleDocuments = [
 const sampleStockHistory = createSampleStockHistory(sampleDocuments);
 let activeState = null;
 
+function blankPriceImport() {
+  return {
+    text: "",
+    rows: [],
+    errors: [],
+    options: {
+      updateCost: true,
+      updatePrice: true,
+      updateVat: false,
+      updateName: false,
+      updateManufacturer: false,
+      createMissing: false,
+    },
+  };
+}
+
 const state = {
   page: database.isConfigured ? "work-center" : "database-setup",
   products: [],
@@ -275,9 +291,11 @@ const state = {
   selectedProductId: null,
   selectedCustomerId: null,
   selectedSalesDocumentId: null,
+  globalSearchQuery: "",
   productQuery: "",
   productStatusFilter: "active",
   productStockFilter: "all",
+  priceImport: blankPriceImport(),
   stockHistoryQuery: "",
   customerQuery: "",
   customerDebtQuery: "",
@@ -1490,10 +1508,7 @@ function renderSidebar() {
     { page: "products", label: "Prekės", icon: "□" },
     { page: "customers", label: "Klientai", icon: "◎" },
     { page: "customer-debts", label: "Klientų skolos", icon: "€" },
-    { page: "suppliers", label: "Tiekėjai", icon: "◇" },
     { page: "documents", label: "Pajamavimo dokumentai", icon: "≡" },
-    { page: "stock-history", label: "Likučių istorija", icon: "↕" },
-    { page: "new-document", label: "Naujas pajamavimas", icon: "+" },
   ];
 
   return `
@@ -1507,7 +1522,8 @@ function renderSidebar() {
       </div>
       ${
         showNavigation
-          ? `<nav class="nav" aria-label="Pagrindinė navigacija">
+          ? `${renderGlobalSearch()}
+            <nav class="nav" aria-label="Pagrindinė navigacija">
               ${items
                 .map(
                   (item) => `
@@ -1518,7 +1534,28 @@ function renderSidebar() {
                   `,
                 )
                 .join("")}
-              <details class="nav-section" open>
+              <details class="nav-section" ${["suppliers", "stock-history", "new-document", "price-import"].includes(state.page) ? "open" : ""}>
+                <summary>Kita</summary>
+                <div class="nav-sub">
+                  <button class="nav-button sub-button ${state.page === "new-document" ? "active" : ""}" data-page="new-document">
+                    <span class="nav-icon">+</span>
+                    <span>Naujas pajamavimas</span>
+                  </button>
+                  <button class="nav-button sub-button ${state.page === "suppliers" ? "active" : ""}" data-page="suppliers">
+                    <span class="nav-icon">◇</span>
+                    <span>Tiekėjai</span>
+                  </button>
+                  <button class="nav-button sub-button ${state.page === "stock-history" ? "active" : ""}" data-page="stock-history">
+                    <span class="nav-icon">↕</span>
+                    <span>Likučių istorija</span>
+                  </button>
+                  <button class="nav-button sub-button ${state.page === "price-import" ? "active" : ""}" data-page="price-import">
+                    <span class="nav-icon">€</span>
+                    <span>Kainininkai</span>
+                  </button>
+                </div>
+              </details>
+              <details class="nav-section" ${["sales", "new-sales-document", "sales-document-detail", "numbering"].includes(state.page) ? "open" : ""}>
                 <summary>Pardavimai</summary>
                 <div class="nav-sub">
                   ${SALES_TYPE_ORDER.map(
@@ -1539,7 +1576,7 @@ function renderSidebar() {
                   </button>
                 </div>
               </details>
-              <details class="nav-section" open>
+              <details class="nav-section" ${["vat-registers", "isaf-export", "accounting-settings"].includes(state.page) ? "open" : ""}>
                 <summary>Buhalterija</summary>
                 <div class="nav-sub">
                   <button class="nav-button sub-button ${state.page === "vat-registers" ? "active" : ""}" data-page="vat-registers">
@@ -1581,6 +1618,113 @@ function sidebarItemActive(page) {
   return state.page === page;
 }
 
+function renderGlobalSearch() {
+  const results = globalSearchResults();
+  const hasQuery = state.globalSearchQuery.trim().length >= 2;
+  return `
+    <div class="global-search">
+      <label class="global-search-box">
+        <span>⌕</span>
+        <input data-global-search value="${escapeHtml(state.globalSearchQuery)}" placeholder="Ieškoti visur" />
+      </label>
+      ${
+        hasQuery
+          ? `<div class="global-search-results">
+              ${
+                results.length
+                  ? results.map(renderGlobalSearchResult).join("")
+                  : `<div class="global-search-empty">Nerasta</div>`
+              }
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function globalSearchResults() {
+  const query = state.globalSearchQuery.trim().toLowerCase();
+  if (query.length < 2) return [];
+  const results = [];
+
+  activeProducts()
+    .filter((product) => `${product.article} ${product.name} ${product.manufacturer}`.toLowerCase().includes(query))
+    .slice(0, 4)
+    .forEach((product) => {
+      results.push({
+        label: product.article,
+        meta: product.name,
+        type: "Prekė",
+        action: "view-product",
+        id: product.id,
+      });
+    });
+
+  state.customers
+    .filter((customer) => `${customer.name} ${customer.companyCode} ${customer.vatCode} ${customer.email}`.toLowerCase().includes(query))
+    .slice(0, 4)
+    .forEach((customer) => {
+      results.push({
+        label: customer.name,
+        meta: customer.companyCode || customer.email || "Klientas",
+        type: "Klientas",
+        action: "view-customer",
+        id: customer.id,
+      });
+    });
+
+  state.suppliers
+    .filter((supplier) => `${supplier.name} ${supplier.code} ${supplier.email}`.toLowerCase().includes(query))
+    .slice(0, 3)
+    .forEach((supplier) => {
+      results.push({
+        label: supplier.name,
+        meta: supplier.code || supplier.email || "Tiekėjas",
+        type: "Tiekėjas",
+        action: "edit-supplier",
+        id: supplier.id,
+      });
+    });
+
+  state.documents
+    .filter((document) => `${document.number} ${document.supplierDocumentNumber} ${supplierName(document.supplierId)}`.toLowerCase().includes(query))
+    .slice(0, 4)
+    .forEach((document) => {
+      results.push({
+        label: document.number,
+        meta: `${supplierName(document.supplierId)} · ${document.status}`,
+        type: "Pirkimas",
+        action: "view-document",
+        id: document.id,
+      });
+    });
+
+  state.salesDocuments
+    .filter((document) => `${document.number} ${customerName(document.customerId)} ${document.customerDocumentNumber}`.toLowerCase().includes(query))
+    .slice(0, 4)
+    .forEach((document) => {
+      results.push({
+        label: document.number,
+        meta: `${salesTypeLabel(document.type)} · ${customerName(document.customerId)}`,
+        type: "Pardavimas",
+        action: "view-sales-document",
+        id: document.id,
+      });
+    });
+
+  return results.slice(0, 9);
+}
+
+function renderGlobalSearchResult(result) {
+  return `
+    <button class="global-search-result" data-action="${result.action}" data-id="${result.id}">
+      <span>${escapeHtml(result.type)}</span>
+      <strong>${escapeHtml(result.label)}</strong>
+      <em>${escapeHtml(result.meta)}</em>
+    </button>
+  `;
+}
+
 function renderPage() {
   if (!database.isConfigured || state.page === "database-setup") return renderDatabaseSetupPage();
   if (state.isLoading) return renderLoadingPage();
@@ -1602,6 +1746,7 @@ function renderPage() {
   if (state.page === "document-detail") return renderDocumentDetailPage();
   if (state.page === "product-detail") return renderProductDetailPage();
   if (state.page === "stock-history") return renderStockHistoryPage();
+  if (state.page === "price-import") return renderPriceImportPage();
   return renderProductsPage();
 }
 
@@ -1714,20 +1859,18 @@ function renderWorkCenterPage() {
   const summary = workCenterSummary();
   const workItems = workCenterItems(summary);
   const latestMovements = state.stockHistory.slice(0, 5);
+  const visibleItems = workItems.slice(0, 3);
 
   return `
     ${renderHeader(
       "Darbo centras",
-      "Svarbiausi darbai vienoje vietoje.",
-      `<div class="form-actions">
-        <button class="button secondary" data-action="quick-new-receipt">Naujas pajamavimas</button>
-        <button class="button" data-action="quick-new-invoice">Nauja sąskaita</button>
-      </div>`,
+      "Pradėkite nuo vieno aiškaus veiksmo.",
+      "",
       "Šiandien",
     )}
     <section class="work-hero">
       <div class="work-hero-main">
-        <p class="work-kicker">Kitas geriausias veiksmas</p>
+        <p class="work-kicker">Ką daryti dabar</p>
         <h2>${escapeHtml(workItems[0]?.title ?? "Viskas atrodo tvarkingai")}</h2>
         <p>${escapeHtml(workItems[0]?.meta ?? "Galite tęsti nuo naujo dokumento arba peržiūrėti registrus.")}</p>
       </div>
@@ -1735,40 +1878,45 @@ function renderWorkCenterPage() {
         ${renderWorkHeroButton(workItems[0])}
       </div>
     </section>
-    <div class="summary-grid">
-      ${metricCard("Mažas likutis", summary.lowStock.length)}
-      ${metricCard("Juodraščiai", summary.draftsTotal)}
-      ${metricCard("Klientų skola", formatMoney(summary.debtTotal))}
-      ${metricCard("Šio mėn. PVM įrašai", summary.monthVatEntries)}
-    </div>
+    <section class="calm-actions" aria-label="Pagrindiniai veiksmai">
+      ${calmActionButton("quick-new-invoice", "Parduoti", "Sukurti sąskaitą klientui")}
+      ${calmActionButton("prepare-low-stock-receipt", "Papildyti sandėlį", "Sistema paruoš pirkimo juodraštį", summary.lowStock.length === 0)}
+      ${calmActionButton("go-customer-debts", "Patikrinti skolas", "Matyti neapmokėtus dokumentus")}
+    </section>
     <section class="work-layout">
       <div class="work-column">
         <div class="section-heading">
-          <h2>Reikia dėmesio</h2>
-          <span>${workItems.length} signalai</span>
+          <h2>Svarbiausia</h2>
+          <span>${visibleItems.length} iš ${workItems.length}</span>
         </div>
         <div class="work-card-grid">
-          ${workItems.map(renderWorkItemCard).join("")}
+          ${visibleItems.map(renderWorkItemCard).join("")}
         </div>
+        <details class="advanced-work-panel">
+          <summary>Papildomai</summary>
+          <div class="summary-grid compact-summary-grid">
+            ${metricCard("Mažas likutis", summary.lowStock.length)}
+            ${metricCard("Juodraščiai", summary.draftsTotal)}
+            ${metricCard("Klientų skola", formatMoney(summary.debtTotal))}
+            ${metricCard("PVM įrašai", summary.monthVatEntries)}
+          </div>
+          ${renderAutomationPanel(summary)}
+        </details>
       </div>
       <aside class="work-side">
         <div class="section-heading">
-          <h2>Greiti veiksmai</h2>
-          <span>Dažniausi darbai</span>
+          <h2>Trumpai</h2>
+          <span>Pasirinktinai</span>
         </div>
         <div class="quick-grid">
           ${quickActionButton("quick-new-receipt", "Pajamavimas", "Pirkimo prekės")}
-          ${quickActionButton("quick-new-invoice", "Sąskaita", "Pardavimas klientui")}
           ${quickActionButton("quick-new-customer", "Klientas", "Nauja kortelė")}
           ${quickActionButton("go-isaf-month", "i.SAF", "Šio mėnesio XML")}
         </div>
-        <div class="section-heading recent-heading">
-          <h2>Paskutiniai judėjimai</h2>
-          <span>${latestMovements.length}</span>
-        </div>
-        <div class="recent-list">
-          ${renderRecentMovementList(latestMovements)}
-        </div>
+        <details class="recent-details">
+          <summary>Paskutiniai judėjimai (${latestMovements.length})</summary>
+          <div class="recent-list">${renderRecentMovementList(latestMovements)}</div>
+        </details>
       </aside>
     </section>
   `;
@@ -1805,8 +1953,8 @@ function workCenterItems(summary) {
       tone: "danger",
       title: `${summary.lowStock.length} prekės su mažu likučiu`,
       meta: `${summary.lowStock[0].article} · ${summary.lowStock[0].name}`,
-      action: "go-low-stock",
-      label: "Atidaryti likučius",
+      action: "prepare-low-stock-receipt",
+      label: "Paruošti pirkimą",
     });
   }
   if (summary.overdueRows.length) {
@@ -1814,8 +1962,8 @@ function workCenterItems(summary) {
       tone: "danger",
       title: `${summary.overdueRows.length} vėluojančios skolos`,
       meta: `Vėluojanti suma: ${formatMoney(summary.overdueRows.reduce((sum, row) => sum + Number(row.overdueDebt || 0), 0))}`,
-      action: "go-customer-debts",
-      label: "Peržiūrėti skolas",
+      action: "prepare-first-debt-reminder",
+      label: "Paruošti priminimą",
     });
   }
   if (summary.draftsTotal) {
@@ -1875,6 +2023,124 @@ function renderWorkItemCard(item) {
   `;
 }
 
+function calmActionButton(action, title, meta, disabled = false) {
+  return `
+    <button class="calm-action" data-action="${action}" ${disabled ? "disabled" : ""}>
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(meta)}</span>
+    </button>
+  `;
+}
+
+function renderAutomationPanel(summary) {
+  const closeItems = monthCloseItems(summary);
+  const readyCount = closeItems.filter((item) => item.done).length;
+  const qualityItems = dataQualityItems();
+
+  return `
+    <section class="automation-panel">
+      <div class="automation-card primary-automation">
+        <div>
+          <p class="work-kicker">Autopilotas</p>
+          <h2>Sandėlio papildymo juodraštis</h2>
+          <p>${summary.lowStock.length ? `${summary.lowStock.length} mažo likučio prekės gali būti sudėtos į pajamavimą automatiškai.` : "Mažo likučio prekių šiuo metu nėra."}</p>
+        </div>
+        <button class="button" data-action="prepare-low-stock-receipt" ${summary.lowStock.length ? "" : "disabled"}>Paruošti</button>
+      </div>
+      <div class="automation-card">
+        <div class="section-heading compact-heading">
+          <h2>Mėnesio uždarymas</h2>
+          <span>${readyCount}/${closeItems.length}</span>
+        </div>
+        <div class="checklist">
+          ${closeItems.map(renderChecklistRow).join("")}
+        </div>
+      </div>
+      <div class="automation-card">
+        <div class="section-heading compact-heading">
+          <h2>Duomenų švara</h2>
+          <span>${qualityItems.filter((item) => !item.done).length} taisytina</span>
+        </div>
+        <div class="checklist">
+          ${qualityItems.map(renderChecklistRow).join("")}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function monthCloseItems(summary) {
+  return [
+    {
+      done: !summary.accountingMissing.length,
+      label: "Įmonės duomenys",
+      meta: summary.accountingMissing.length ? summary.accountingMissing.join(", ") : "Paruošta",
+      action: "go-accounting-settings",
+    },
+    {
+      done: summary.draftsTotal === 0,
+      label: "Juodraščiai",
+      meta: summary.draftsTotal ? `${summary.draftsTotal} neužbaigti` : "Nėra neužbaigtų",
+      action: summary.receiptDrafts.length ? "go-receipt-drafts" : "go-sales-drafts",
+    },
+    {
+      done: summary.monthVatEntries > 0,
+      label: "PVM registrai",
+      meta: `${summary.monthVatEntries} šio mėnesio įrašai`,
+      action: "go-vat-month",
+    },
+    {
+      done: summary.monthVatEntries > 0 && !summary.accountingMissing.length,
+      label: "i.SAF XML",
+      meta: "Rinkmena pagal šį mėnesį",
+      action: "go-isaf-month",
+    },
+  ];
+}
+
+function dataQualityItems() {
+  const productsWithoutPrice = activeProducts().filter((product) => Number(product.price) <= 0).length;
+  const productsWithoutCost = activeProducts().filter((product) => Number(product.cost) <= 0).length;
+  const customersWithoutContact = state.customers.filter((customer) => customer.isActive && !customer.email && !customer.phone).length;
+  const zeroReceiptDocuments = state.documents.filter((document) => document.status === STATUS_CONFIRMED && Number(document.total) <= 0).length;
+  return [
+    {
+      done: productsWithoutPrice === 0,
+      label: "Pardavimo kainos",
+      meta: productsWithoutPrice ? `${productsWithoutPrice} prekės be kainos` : "Tvarkinga",
+      action: "go-products-no-price",
+    },
+    {
+      done: productsWithoutCost === 0,
+      label: "Savikainos",
+      meta: productsWithoutCost ? `${productsWithoutCost} prekės be savikainos` : "Tvarkinga",
+      action: "go-products-no-cost",
+    },
+    {
+      done: customersWithoutContact === 0,
+      label: "Klientų kontaktai",
+      meta: customersWithoutContact ? `${customersWithoutContact} be kontakto` : "Tvarkinga",
+      action: "go-customers",
+    },
+    {
+      done: zeroReceiptDocuments === 0,
+      label: "Pirkimų sumos",
+      meta: zeroReceiptDocuments ? `${zeroReceiptDocuments} dokumentai su 0` : "Tvarkinga",
+      action: "go-receipts",
+    },
+  ];
+}
+
+function renderChecklistRow(item) {
+  return `
+    <button class="check-row ${item.done ? "done" : ""}" data-action="${item.action}">
+      <span class="check-mark">${item.done ? "✓" : "!"}</span>
+      <strong>${escapeHtml(item.label)}</strong>
+      <em>${escapeHtml(item.meta)}</em>
+    </button>
+  `;
+}
+
 function quickActionButton(action, title, meta) {
   return `
     <button class="quick-card" data-action="${action}">
@@ -1913,7 +2179,10 @@ function renderProductsPage() {
     ${renderHeader(
       "Prekės",
       "Artikulai, likučiai ir kainos mažmeninei vonios įrangos prekybai.",
-      `<button class="button" data-action="add-product"><span class="button-icon">+</span>Pridėti prekę</button>`,
+      `<div class="form-actions">
+        <button class="button secondary" data-page="price-import">Įkelti kainininką</button>
+        <button class="button" data-action="add-product"><span class="button-icon">+</span>Pridėti prekę</button>
+      </div>`,
     )}
     ${renderMetrics()}
     <div class="toolbar">
@@ -1930,6 +2199,8 @@ function renderProductsPage() {
         <div class="segmented-control" aria-label="Likučio filtras">
           ${productStockButton("all", "Visi likučiai", productsForCurrentStatus().length)}
           ${productStockButton("low", "Mažas likutis", productsForCurrentStatus().filter(isLowStockProduct).length)}
+          ${productStockButton("no-price", "Be kainos", productsForCurrentStatus().filter((product) => Number(product.price) <= 0).length)}
+          ${productStockButton("no-cost", "Be savikainos", productsForCurrentStatus().filter((product) => Number(product.cost) <= 0).length)}
         </div>
       </div>
       <div class="toolbar-right muted" data-products-count>${products.length} iš ${visiblePool.length}</div>
@@ -1961,6 +2232,143 @@ function renderProductsPage() {
   `;
 }
 
+function renderPriceImportPage() {
+  const summary = priceImportSummary();
+  const canApply = summary.update > 0 || summary.create > 0;
+
+  return `
+    ${renderHeader(
+      "Kainininkai",
+      "Įkelkite gamintojo CSV arba TXT kainininką su prekių kodais ir atnaujinkite kainas per peržiūrą.",
+      `<button class="button secondary" data-action="download-price-template">Atsisiųsti šabloną</button>`,
+      "Prekės",
+    )}
+    <section class="summary-grid price-import-summary" aria-label="Kainininko santrauka">
+      ${metricCard("Eilučių", String(summary.total))}
+      ${metricCard("Atnaujins", String(summary.update))}
+      ${metricCard("Sukurs", String(summary.create))}
+      ${metricCard("Praleis", String(summary.skip))}
+    </section>
+    <section class="document-panel price-import-panel">
+      <div class="price-import-layout">
+        <div class="price-import-inputs">
+          <label class="form-field">
+            <span class="label">Gamintojo kainininko failas</span>
+            <input class="input file-input" data-price-import-file type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain" />
+          </label>
+          <label class="form-field">
+            <span class="label">Arba įklijuokite lentelę</span>
+            <textarea class="input textarea price-import-textarea" data-price-import-text rows="12" placeholder="Artikulas;Pavadinimas;Gamintojas;Savikaina;Pardavimo kaina;PVM">${escapeHtml(state.priceImport.text)}</textarea>
+          </label>
+        </div>
+        <div class="price-import-options">
+          <h2>Ką atnaujinti</h2>
+          ${priceImportOption("updateCost", "Savikainą")}
+          ${priceImportOption("updatePrice", "Pardavimo kainą")}
+          ${priceImportOption("updateVat", "PVM tarifą")}
+          ${priceImportOption("updateName", "Pavadinimą")}
+          ${priceImportOption("updateManufacturer", "Gamintoją")}
+          ${priceImportOption("createMissing", "Sukurti prekes, kurių dar nėra sąraše")}
+          <div class="auth-message import-note">
+            Sistema atpažįsta dažnus stulpelius: artikulas, kodas, SKU, pavadinimas, gamintojas, savikaina, pardavimo kaina, price, VAT. Excel lentelę galima nukopijuoti tiesiai į lauką arba išsaugoti kaip CSV.
+          </div>
+        </div>
+      </div>
+      <div class="form-actions price-import-actions">
+        <button class="button secondary" data-action="clear-price-import">Išvalyti</button>
+        <button class="button secondary" data-action="parse-price-import">Nuskaityti</button>
+        <button class="button" data-action="apply-price-import" ${canApply ? "" : "disabled"}>Atnaujinti prekes</button>
+      </div>
+      ${renderPriceImportErrors()}
+    </section>
+    <section class="table-panel price-import-preview">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Būsena</th>
+              <th>Artikulas</th>
+              <th>Pavadinimas</th>
+              <th>Gamintojas</th>
+              <th class="num">Savikaina</th>
+              <th class="num">Pardavimo kaina</th>
+              <th class="num">PVM</th>
+              <th>Pakeitimai</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${renderPriceImportRows()}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function priceImportOption(name, label) {
+  return `
+    <label class="checkbox-field import-checkbox">
+      <input type="checkbox" data-price-import-option="${name}" ${state.priceImport.options[name] ? "checked" : ""} />
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
+}
+
+function renderPriceImportErrors() {
+  if (!state.priceImport.errors.length) return "";
+  return `
+    <div class="auth-message import-errors">
+      ${state.priceImport.errors.map((error) => `<div>${escapeHtml(error)}</div>`).join("")}
+    </div>
+  `;
+}
+
+function renderPriceImportRows() {
+  const rows = state.priceImport.rows;
+  if (!rows.length) {
+    return `<tr><td colspan="8"><div class="empty-state">Įkelkite kainininką ir paspauskite „Nuskaityti“. Čia matysite, kurios prekės bus atnaujintos.</div></td></tr>`;
+  }
+
+  const previewRows = rows.slice(0, 150);
+  const hiddenCount = rows.length - previewRows.length;
+  return `
+    ${previewRows
+      .map(
+        (row) => `
+          <tr>
+            <td>${renderPriceImportStatus(row)}</td>
+            <td><strong>${escapeHtml(row.article || "-")}</strong></td>
+            <td>${escapeHtml(row.name || row.existingProduct?.name || "-")}</td>
+            <td>${escapeHtml(row.manufacturer || row.existingProduct?.manufacturer || "-")}</td>
+            <td class="num">${row.cost === null ? "-" : formatMoney(row.cost)}</td>
+            <td class="num">${row.price === null ? "-" : formatMoney(row.price)}</td>
+            <td class="num">${row.vat === null ? "-" : `${formatNumber(row.vat)} %`}</td>
+            <td>${renderPriceImportChanges(row)}</td>
+          </tr>
+        `,
+      )
+      .join("")}
+    ${
+      hiddenCount > 0
+        ? `<tr><td colspan="8"><div class="empty-state">Rodoma pirmos 150 eilučių. Dar ${hiddenCount} eil. bus pritaikytos paspaudus atnaujinimą.</div></td></tr>`
+        : ""
+    }
+  `;
+}
+
+function renderPriceImportStatus(row) {
+  const className = row.status === "update" ? "success" : row.status === "create" ? "warning" : "danger";
+  const label = row.status === "update" ? "Atnaujins" : row.status === "create" ? "Sukurs" : "Praleis";
+  return `<span class="badge ${className}">${label}</span>`;
+}
+
+function renderPriceImportChanges(row) {
+  if (row.changes.length) {
+    return `<div class="import-change-list">${row.changes.map((change) => `<span>${escapeHtml(change)}</span>`).join("")}</div>`;
+  }
+  return `<span class="muted">${escapeHtml(row.reason || "Pakeitimų nėra")}</span>`;
+}
+
 function productStatusButton(value, label, count) {
   return `
     <button class="segment-button ${state.productStatusFilter === value ? "active" : ""}" data-action="set-product-status-filter" data-status="${value}">
@@ -1981,11 +2389,18 @@ function filteredProducts() {
   const query = state.productQuery.trim().toLowerCase();
   return productsForCurrentStatus().filter((product) => {
     return (
-      (state.productStockFilter !== "low" || isLowStockProduct(product)) &&
+      productMatchesStockFilter(product) &&
       (product.article.toLowerCase().includes(query) ||
         product.name.toLowerCase().includes(query))
     );
   });
+}
+
+function productMatchesStockFilter(product) {
+  if (state.productStockFilter === "low") return isLowStockProduct(product);
+  if (state.productStockFilter === "no-price") return Number(product.price) <= 0;
+  if (state.productStockFilter === "no-cost") return Number(product.cost) <= 0;
+  return true;
 }
 
 function activeProducts() {
@@ -2002,9 +2417,352 @@ function productsForCurrentStatus() {
   return activeProducts();
 }
 
+function priceImportSummary() {
+  return state.priceImport.rows.reduce(
+    (summary, row) => {
+      summary.total += 1;
+      if (row.status === "update") summary.update += 1;
+      if (row.status === "create") summary.create += 1;
+      if (row.status === "skip") summary.skip += 1;
+      return summary;
+    },
+    { total: 0, update: 0, create: 0, skip: 0 },
+  );
+}
+
+function parseCurrentPriceImport({ notify = false } = {}) {
+  const text = state.priceImport.text.trim();
+  if (!text) {
+    state.priceImport.rows = [];
+    state.priceImport.errors = ["Įkelkite arba įklijuokite kainininko tekstą."];
+    if (notify) setToast("Įkelkite kainininką.");
+    return;
+  }
+
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) {
+    state.priceImport.rows = [];
+    state.priceImport.errors = ["Kainininko faile nerasta eilučių."];
+    return;
+  }
+
+  const delimiter = detectPriceImportDelimiter(lines[0]);
+  const firstCells = parseDelimitedLine(lines[0], delimiter).map(cleanImportCell);
+  const detectedColumns = detectPriceImportColumns(firstCells);
+  const hasHeader = detectedColumns.article >= 0 && (
+    detectedColumns.name >= 0 ||
+    detectedColumns.manufacturer >= 0 ||
+    detectedColumns.cost >= 0 ||
+    detectedColumns.price >= 0
+  );
+  const columns = hasHeader
+    ? detectedColumns
+    : { article: 0, name: 1, manufacturer: 2, cost: 3, price: 4, vat: 5, unit: 6, category: 7 };
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  const errors = [];
+
+  if (!hasHeader) {
+    errors.push("Stulpelių pavadinimų nerasta, todėl taikoma tvarka: artikulas, pavadinimas, gamintojas, savikaina, pardavimo kaina, PVM.");
+  }
+
+  if (columns.article < 0) {
+    state.priceImport.rows = [];
+    state.priceImport.errors = ["Nerastas prekės kodo / artikulo stulpelis."];
+    return;
+  }
+
+  const productByCode = new Map(state.products.map((product) => [normalizeArticle(product.article), product]));
+  const rows = dataLines
+    .map((line, index) => parsePriceImportRow(line, delimiter, columns, productByCode, index + (hasHeader ? 2 : 1)))
+    .filter(Boolean);
+
+  const duplicateArticles = findDuplicateImportArticles(rows);
+  duplicateArticles.forEach((article) => errors.push(`Kainininke kartojasi artikulas ${article}. Bus naudojama kiekviena eilutė iš eilės.`));
+
+  state.priceImport.rows = rows;
+  state.priceImport.errors = errors;
+  if (notify) {
+    const summary = priceImportSummary();
+    setToast(`Nuskaityta: ${summary.update} atnaujins, ${summary.create} sukurs, ${summary.skip} praleis.`);
+  }
+}
+
+function detectPriceImportDelimiter(line) {
+  return [";", "\t", ",", "|"]
+    .map((delimiter) => ({ delimiter, columns: parseDelimitedLine(line, delimiter).length }))
+    .sort((left, right) => right.columns - left.columns)[0].delimiter;
+}
+
+function parseDelimitedLine(line, delimiter) {
+  const cells = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    const nextCharacter = line[index + 1];
+    if (character === '"' && quoted && nextCharacter === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (character === delimiter && !quoted) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  cells.push(current);
+  return cells;
+}
+
+function detectPriceImportColumns(headers) {
+  const columns = {
+    article: importColumnIndex(headers, ["artikulas", "prekes kodas", "prekės kodas", "kodas", "sku", "article", "article code", "article_code", "product code", "item code", "code"]),
+    name: importColumnIndex(headers, ["pavadinimas", "preke", "prekė", "prekes pavadinimas", "prekės pavadinimas", "name", "product name", "description", "aprasymas", "aprašymas"]),
+    manufacturer: importColumnIndex(headers, ["gamintojas", "brand", "manufacturer", "producer", "tiekejas", "tiekėjas"]),
+    category: importColumnIndex(headers, ["kategorija", "category", "group", "grupe", "grupė"]),
+    cost: importColumnIndex(headers, ["savikaina", "pirkimo kaina", "purchase price", "purchase_price", "cost", "net cost", "didmenine", "didmeninė", "wholesale"]),
+    price: importColumnIndex(headers, ["pardavimo kaina", "sale price", "sale_price", "retail price", "recommended price", "rekomenduojama kaina", "rrp", "price", "kaina"]),
+    vat: importColumnIndex(headers, ["pvm", "vat", "vat rate", "vat_rate"]),
+    unit: importColumnIndex(headers, ["vnt", "vnt.", "matas", "vienetas", "unit", "unit of measure"]),
+  };
+
+  if (columns.cost === columns.price && columns.cost >= 0) {
+    const header = normalizeImportText(headers[columns.cost]);
+    if (header.includes("purchase") || header.includes("pirkimo") || header.includes("savikaina") || header.includes("cost") || header.includes("wholesale") || header.includes("didmen")) {
+      columns.price = -1;
+    } else if (header.includes("sale") || header.includes("pardavimo") || header.includes("retail") || header.includes("rrp") || header.includes("rekomenduoj")) {
+      columns.cost = -1;
+    }
+  }
+
+  return columns;
+}
+
+function importColumnIndex(headers, aliases) {
+  const normalizedHeaders = headers.map(normalizeImportText);
+  const normalizedAliases = aliases.map(normalizeImportText);
+  const exactIndex = normalizedHeaders.findIndex((header) => normalizedAliases.includes(header));
+  if (exactIndex >= 0) return exactIndex;
+  return normalizedHeaders.findIndex((header) =>
+    normalizedAliases.some((alias) => header.includes(alias) || alias.includes(header)),
+  );
+}
+
+function parsePriceImportRow(line, delimiter, columns, productByCode, lineNumber) {
+  const cells = parseDelimitedLine(line, delimiter).map(cleanImportCell);
+  const article = cellAt(cells, columns.article);
+  const row = {
+    lineNumber,
+    article,
+    name: cellAt(cells, columns.name),
+    manufacturer: cellAt(cells, columns.manufacturer),
+    category: cellAt(cells, columns.category),
+    unit: cellAt(cells, columns.unit) || "vnt.",
+    cost: parseImportMoney(cellAt(cells, columns.cost)),
+    price: parseImportMoney(cellAt(cells, columns.price)),
+    vat: parseImportMoney(cellAt(cells, columns.vat)),
+    status: "skip",
+    reason: "",
+    changes: [],
+    existingProduct: null,
+  };
+
+  if (!row.article) {
+    row.reason = `${lineNumber} eilutėje nėra artikulo.`;
+    return row;
+  }
+
+  row.existingProduct = productByCode.get(normalizeArticle(row.article)) ?? null;
+  if (!row.existingProduct && !state.priceImport.options.createMissing) {
+    row.reason = "Prekė nerasta. Įjunkite kūrimą, jeigu ją reikia pridėti.";
+    return row;
+  }
+
+  if (!row.existingProduct && state.priceImport.options.createMissing && !row.name) {
+    row.reason = "Naujai prekei reikia pavadinimo.";
+    return row;
+  }
+
+  row.changes = buildPriceImportChanges(row, row.existingProduct);
+  if (!row.changes.length) {
+    row.reason = row.existingProduct ? "Kainos ir pasirinkti laukai jau sutampa." : "Nėra ką sukurti.";
+    return row;
+  }
+
+  row.status = row.existingProduct ? "update" : "create";
+  return row;
+}
+
+function buildPriceImportChanges(row, existingProduct) {
+  const changes = [];
+  const options = state.priceImport.options;
+
+  if (!existingProduct) {
+    changes.push("Nauja prekė");
+    if (row.cost !== null) changes.push(`Savikaina ${formatMoney(row.cost)}`);
+    if (row.price !== null) changes.push(`Pardavimo kaina ${formatMoney(row.price)}`);
+    if (row.vat !== null) changes.push(`PVM ${formatNumber(row.vat)} %`);
+    return changes;
+  }
+
+  if (options.updateCost && row.cost !== null && !sameImportNumber(existingProduct.cost, row.cost)) {
+    changes.push(`Savikaina ${formatMoney(existingProduct.cost)} -> ${formatMoney(row.cost)}`);
+  }
+  if (options.updatePrice && row.price !== null && !sameImportNumber(existingProduct.price, row.price)) {
+    changes.push(`Pardavimo kaina ${formatMoney(existingProduct.price)} -> ${formatMoney(row.price)}`);
+  }
+  if (options.updateVat && row.vat !== null && !sameImportNumber(existingProduct.vat, row.vat)) {
+    changes.push(`PVM ${formatNumber(existingProduct.vat)} % -> ${formatNumber(row.vat)} %`);
+  }
+  if (options.updateName && row.name && row.name !== existingProduct.name) {
+    changes.push(`Pavadinimas: ${existingProduct.name} -> ${row.name}`);
+  }
+  if (options.updateManufacturer && row.manufacturer && row.manufacturer !== existingProduct.manufacturer) {
+    changes.push(`Gamintojas: ${existingProduct.manufacturer || "-"} -> ${row.manufacturer}`);
+  }
+
+  return changes;
+}
+
+function findDuplicateImportArticles(rows) {
+  const seen = new Set();
+  const duplicates = new Set();
+  rows.forEach((row) => {
+    const article = normalizeArticle(row.article);
+    if (!article) return;
+    if (seen.has(article)) duplicates.add(row.article);
+    seen.add(article);
+  });
+  return [...duplicates];
+}
+
+function cleanImportCell(value) {
+  return String(value ?? "").replace(/^\uFEFF/, "").trim();
+}
+
+function cellAt(cells, index) {
+  if (index < 0 || index === undefined) return "";
+  return cleanImportCell(cells[index]);
+}
+
+function normalizeArticle(value) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function normalizeImportText(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function parseImportMoney(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  let normalized = raw.replace(/\s/g, "").replace(/[^\d,.-]/g, "");
+  if (!normalized || normalized === "-" || normalized === "." || normalized === ",") return null;
+  const commaIndex = normalized.lastIndexOf(",");
+  const dotIndex = normalized.lastIndexOf(".");
+  if (commaIndex >= 0 && dotIndex >= 0) {
+    normalized = commaIndex > dotIndex
+      ? normalized.replace(/\./g, "").replace(",", ".")
+      : normalized.replace(/,/g, "");
+  } else if (commaIndex >= 0) {
+    normalized = normalized.replace(",", ".");
+  }
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function sameImportNumber(left, right) {
+  return Math.abs((Number(left) || 0) - (Number(right) || 0)) < 0.0001;
+}
+
+async function applyPriceImport() {
+  if (!state.priceImport.rows.length) parseCurrentPriceImport();
+  const rows = state.priceImport.rows.filter((row) => row.status === "update" || row.status === "create");
+  if (!rows.length) {
+    setToast("Nėra kainų pakeitimų, kuriuos reikėtų pritaikyti.");
+    return;
+  }
+
+  await runSaving(async () => {
+    let updated = 0;
+    let created = 0;
+    for (const row of rows) {
+      const existingProduct = state.products.find((product) => normalizeArticle(product.article) === normalizeArticle(row.article));
+      const product = priceImportProductPayload(row, existingProduct);
+      const savedProduct = await database.saveProduct(product);
+      upsert(state.products, savedProduct);
+      if (existingProduct) updated += 1;
+      else created += 1;
+    }
+    await reloadAllData();
+    parseCurrentPriceImport();
+    setToast(`Kainininkas pritaikytas: atnaujinta ${updated}, sukurta ${created}.`);
+  });
+}
+
+function priceImportProductPayload(row, existingProduct) {
+  const options = state.priceImport.options;
+  if (!existingProduct) {
+    return {
+      id: null,
+      article: row.article,
+      name: row.name || row.article,
+      manufacturer: row.manufacturer || "",
+      category: row.category || "",
+      warehouse: "Vilnius",
+      stock: 0,
+      minimumStock: 0,
+      unit: row.unit || "vnt.",
+      cost: row.cost ?? 0,
+      price: row.price ?? 0,
+      vat: row.vat ?? 21,
+      notes: "",
+      isActive: true,
+    };
+  }
+
+  return {
+    ...existingProduct,
+    cost: options.updateCost && row.cost !== null ? row.cost : existingProduct.cost,
+    price: options.updatePrice && row.price !== null ? row.price : existingProduct.price,
+    vat: options.updateVat && row.vat !== null ? row.vat : existingProduct.vat,
+    name: options.updateName && row.name ? row.name : existingProduct.name,
+    manufacturer: options.updateManufacturer && row.manufacturer ? row.manufacturer : existingProduct.manufacturer,
+  };
+}
+
+function resetPriceImport() {
+  state.priceImport = blankPriceImport();
+}
+
+function downloadPriceTemplate() {
+  const rows = [
+    ["Artikulas", "Pavadinimas", "Gamintojas", "Savikaina", "Pardavimo kaina", "PVM"],
+    ["MIX-1001", "Praustuvo maišytuvas", "Hansgrohe", "70,00", "109,00", "21"],
+  ];
+  const csv = rows.map((row) => row.map(csvCell).join(";")).join("\n");
+  downloadTextFile("kainininko-sablonas.csv", `\ufeff${csv}`, "text/csv;charset=utf-8");
+}
+
 function isLowStockProduct(product) {
   const threshold = Math.max(5, Number(product.minimumStock) || 0);
-  return Number(product.stock) <= threshold;
+  return freeStockForProduct(product) <= threshold;
 }
 
 function renderProductsRows(products) {
@@ -2019,7 +2777,7 @@ function renderProductsRows(products) {
               <td>${escapeHtml(product.manufacturer)}</td>
               <td>${escapeHtml(product.category)}</td>
               <td>${escapeHtml(product.warehouse)}</td>
-              <td class="num">${formatNumber(product.stock)} ${escapeHtml(product.unit)}</td>
+              <td class="num">${renderProductStockCell(product)}</td>
               <td class="num">${formatMoney(product.cost)}</td>
               <td class="num">${formatMoney(product.price)}</td>
               <td class="num">${formatNumber(product.vat)} %</td>
@@ -2044,6 +2802,17 @@ function renderProductsRows(products) {
 
 function renderAvailabilityBadge(label, isActive) {
   return `<span class="badge ${isActive ? "success" : "warning"}">${escapeHtml(label)}</span>`;
+}
+
+function renderProductStockCell(product) {
+  const freeStock = freeStockForProduct(product);
+  const className = isLowStockProduct(product) ? "stock-chip low" : "stock-chip";
+  return `
+    <span class="${className}">
+      ${formatNumber(product.stock)} ${escapeHtml(product.unit)}
+      ${freeStock !== Number(product.stock) ? `<em>Laisva ${formatNumber(freeStock)}</em>` : ""}
+    </span>
+  `;
 }
 
 function renderProductDetailPage() {
@@ -2487,7 +3256,12 @@ function renderCustomerDebtRow(row) {
       <td class="num">${row.overdueDebt > 0 ? `<strong class="danger-text">${formatMoney(row.overdueDebt)}</strong>` : formatMoney(0)}</td>
       <td>${row.oldestDueDate ? formatDate(row.oldestDueDate) : "-"}</td>
       <td>${row.lastDocument ? formatDate(row.lastDocument.date) : "-"}</td>
-      <td class="actions-cell"><button class="link-button" data-action="view-customer" data-id="${row.customer.id}">Kortelė</button></td>
+      <td class="actions-cell wide-actions">
+        <div class="action-group">
+          <button class="link-button" data-action="prepare-debt-reminder" data-id="${row.customer.id}">Priminimas</button>
+          <button class="link-button" data-action="view-customer" data-id="${row.customer.id}">Kortelė</button>
+        </div>
+      </td>
     </tr>
   `;
 }
@@ -3981,9 +4755,11 @@ function renderProductDatalist() {
 function renderModal() {
   if (state.modal.type === "confirm") return renderConfirmModal();
   if (state.modal.type === "product") return renderProductModal();
+  if (state.modal.type === "supplier") return renderSupplierModal();
   if (state.modal.type === "customer") return renderCustomerModal();
   if (state.modal.type === "payment") return renderPaymentModal();
-  return renderSupplierModal();
+  if (state.modal.type === "debt-reminder") return renderDebtReminderModal();
+  return "";
 }
 
 function renderConfirmModal() {
@@ -4150,6 +4926,31 @@ function renderPaymentModal() {
   `;
 }
 
+function renderDebtReminderModal() {
+  const reminder = state.modal.data;
+  return `
+    <div class="modal-backdrop" role="dialog" aria-modal="true">
+      <div class="modal wide-modal">
+        <div class="modal-header">
+          <h2>Skolos priminimas</h2>
+          <button type="button" class="close-button" data-action="close-modal">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="auth-message success-message">Tekstas sugeneruotas automatiškai. Patikrinkite prieš siųsdami klientui.</div>
+          <label class="form-field">
+            <span class="label">Paruoštas tekstas</span>
+            <textarea class="input textarea reminder-textarea" data-reminder-text rows="12" readonly>${escapeHtml(reminder.text)}</textarea>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="button secondary" data-action="close-modal">Uždaryti</button>
+          <button type="button" class="button" data-action="copy-debt-reminder">Kopijuoti tekstą</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function modalInput(label, name, value, type = "text", step = "") {
   return `
     <label class="form-field">
@@ -4200,6 +5001,13 @@ function bindEvents() {
   document.querySelector("[data-product-search]")?.addEventListener("input", (event) => {
     state.productQuery = event.target.value;
     refreshProductsTable();
+  });
+
+  bindPriceImportEvents();
+
+  document.querySelector("[data-global-search]")?.addEventListener("input", (event) => {
+    state.globalSearchQuery = event.target.value;
+    render();
   });
 
   document.querySelector("[data-numbering-date]")?.addEventListener("change", (event) => {
@@ -4304,6 +5112,30 @@ function bindUnsavedFormRetention() {
     });
 }
 
+function bindPriceImportEvents() {
+  document.querySelector("[data-price-import-text]")?.addEventListener("input", (event) => {
+    state.priceImport.text = event.target.value;
+  });
+
+  document.querySelector("[data-price-import-file]")?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    state.priceImport.text = await file.text();
+    parseCurrentPriceImport();
+    render();
+  });
+
+  document.querySelectorAll("[data-price-import-option]").forEach((input) => {
+    input.addEventListener("change", () => {
+      state.priceImport.options[input.dataset.priceImportOption] = input.checked;
+      if (state.priceImport.rows.length || state.priceImport.text.trim()) {
+        parseCurrentPriceImport();
+      }
+      render();
+    });
+  });
+}
+
 function formInputValue(input) {
   if (input.type === "checkbox") return input.checked;
   return input.value;
@@ -4324,6 +5156,9 @@ async function handleAction(event) {
   if (state.isSaving) return;
   const action = event.currentTarget.dataset.action;
   const id = event.currentTarget.dataset.id;
+  if (event.currentTarget.closest(".global-search-results")) {
+    state.globalSearchQuery = "";
+  }
 
   if (action === "add-product") openProductModal();
   if (action === "set-product-status-filter") {
@@ -4336,9 +5171,31 @@ async function handleAction(event) {
     render();
     return;
   }
+  if (action === "parse-price-import") {
+    parseCurrentPriceImport({ notify: true });
+    return;
+  }
+  if (action === "apply-price-import") {
+    await applyPriceImport();
+    return;
+  }
+  if (action === "clear-price-import") {
+    resetPriceImport();
+    setToast("Kainininko importas išvalytas.");
+    return;
+  }
+  if (action === "download-price-template") {
+    downloadPriceTemplate();
+    setToast("Kainininko šablonas paruoštas.");
+    return;
+  }
   if (action === "quick-new-receipt") {
     state.newDoc = blankDocument();
     state.page = "new-document";
+  }
+  if (action === "prepare-low-stock-receipt") {
+    prepareLowStockReceiptDraft();
+    return;
   }
   if (action === "quick-new-invoice") {
     state.salesTab = "INVOICE";
@@ -4357,6 +5214,19 @@ async function handleAction(event) {
   if (action === "go-customer-debts") {
     state.customerDebtQuery = "";
     state.page = "customer-debts";
+  }
+  if (action === "prepare-first-debt-reminder") {
+    const row = workCenterSummary().overdueRows[0] ?? customerDebtSummaries()[0];
+    if (row) openDebtReminderModal(row.customer.id);
+    return;
+  }
+  if (action === "prepare-debt-reminder") {
+    openDebtReminderModal(id);
+    return;
+  }
+  if (action === "copy-debt-reminder") {
+    await copyDebtReminder();
+    return;
   }
   if (action === "go-receipt-drafts") {
     state.documentFilters = { from: "", to: "", supplierId: "", status: STATUS_DRAFT, number: "" };
@@ -4383,6 +5253,30 @@ async function handleAction(event) {
   if (action === "go-isaf-month") {
     state.vatFilters = { from: monthStartDate(), to: todayDate(), register: "ALL" };
     state.page = "isaf-export";
+  }
+  if (action === "go-vat-month") {
+    state.vatFilters = { from: monthStartDate(), to: todayDate(), register: "ALL" };
+    state.page = "vat-registers";
+  }
+  if (action === "go-products-no-price") {
+    state.productStatusFilter = "active";
+    state.productStockFilter = "no-price";
+    state.productQuery = "";
+    state.page = "products";
+  }
+  if (action === "go-products-no-cost") {
+    state.productStatusFilter = "active";
+    state.productStockFilter = "no-cost";
+    state.productQuery = "";
+    state.page = "products";
+  }
+  if (action === "go-customers") {
+    state.customerQuery = "";
+    state.page = "customers";
+  }
+  if (action === "go-receipts") {
+    state.documentFilters = { from: "", to: "", supplierId: "", status: "", number: "" };
+    state.page = "documents";
   }
   if (action === "add-customer") openCustomerModal();
   if (action === "edit-customer") openCustomerModal(state.customers.find((item) => idsEqual(item.id, id)));
@@ -5502,6 +6396,87 @@ async function saveAndConfirmDeliveryNote() {
     await reloadAllData();
     setToast("Važtaraštis patvirtintas. Sandėlio likutis sumažintas.");
   });
+}
+
+function prepareLowStockReceiptDraft() {
+  const lowStock = activeProducts().filter(isLowStockProduct);
+  if (!lowStock.length) {
+    setToast("Mažo likučio prekių nėra.");
+    return;
+  }
+
+  const draft = blankDocument();
+  draft.notes = "Automatiškai paruošta pagal mažus likučius.";
+  if (state.suppliers.length === 1) {
+    draft.supplierId = String(state.suppliers[0].id);
+  }
+  draft.rows = lowStock.map((product) => ({
+    rowId: crypto.randomUUID(),
+    lineId: null,
+    productId: product.id,
+    article: product.article,
+    name: product.name,
+    unit: product.unit || "vnt.",
+    quantity: reorderQuantityForProduct(product),
+    unitPrice: Number(product.cost) || 0,
+    vat: Number(product.vat) || 21,
+    lookupMessage: "",
+    lookupMatches: [],
+  }));
+  state.newDoc = draft;
+  state.page = "new-document";
+  setToast(state.suppliers.length === 1
+    ? `Paruošta ${lowStock.length} prekių papildymo juodraštyje.`
+    : `Paruošta ${lowStock.length} prekių. Pasirinkite tiekėją.`);
+}
+
+function reorderQuantityForProduct(product) {
+  const minimum = Math.max(5, Number(product.minimumStock) || 0);
+  const target = Math.max(10, minimum * 2);
+  return Math.max(1, Math.ceil(target - freeStockForProduct(product)));
+}
+
+function openDebtReminderModal(customerId) {
+  const row = customerDebtSummaries().find((item) => idsEqual(item.customer.id, customerId));
+  if (!row) {
+    setToast("Šiam klientui neapmokėtų skolų nėra.");
+    return;
+  }
+  state.modal = {
+    type: "debt-reminder",
+    data: {
+      customerId,
+      text: debtReminderText(row),
+    },
+  };
+  render();
+}
+
+function debtReminderText(row) {
+  const documents = row.documents
+    .map((document) => `- ${document.number}, data ${document.date}, mokėjimo terminas ${document.dueDate || "-"}, likutis ${formatMoney(document.debt)}`)
+    .join("\n");
+  const greeting = row.customer.contactPerson ? `Sveiki, ${row.customer.contactPerson},` : "Sveiki,";
+  return `${greeting}
+
+Primename, kad pagal žemiau nurodytus dokumentus yra likusi neapmokėta suma: ${formatMoney(row.debt)}.
+
+${documents}
+
+Prašome patikrinti informaciją ir, jeigu mokėjimas jau atliktas, atsiųsti mokėjimo patvirtinimą.
+
+Ačiū.`;
+}
+
+async function copyDebtReminder() {
+  const text = state.modal?.data?.text ?? "";
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    setToast("Priminimo tekstas nukopijuotas.");
+  } catch {
+    setToast("Nepavyko automatiškai nukopijuoti. Pažymėkite tekstą rankiniu būdu.");
+  }
 }
 
 function documentFromCurrentForm(status) {
