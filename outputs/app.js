@@ -259,7 +259,7 @@ const sampleStockHistory = createSampleStockHistory(sampleDocuments);
 let activeState = null;
 
 const state = {
-  page: database.isConfigured ? "products" : "database-setup",
+  page: database.isConfigured ? "work-center" : "database-setup",
   products: [],
   suppliers: [],
   documents: [],
@@ -277,6 +277,7 @@ const state = {
   selectedSalesDocumentId: null,
   productQuery: "",
   productStatusFilter: "active",
+  productStockFilter: "all",
   stockHistoryQuery: "",
   customerQuery: "",
   customerDebtQuery: "",
@@ -1017,6 +1018,7 @@ function fromDbDocument(document) {
     unitPrice: Number(line.unit_price) || 0,
     vat: Number(line.vat_rate) || 21,
   }));
+  const totals = documentTotals(lines);
   return {
     id: document.id,
     number: document.document_number,
@@ -1030,9 +1032,9 @@ function fromDbDocument(document) {
     confirmedAt: document.confirmed_at ?? "",
     cancelledAt: document.cancelled_at ?? "",
     lines,
-    subtotal: Number(document.subtotal) || 0,
-    vat: Number(document.vat_total) || 0,
-    total: Number(document.total) || 0,
+    subtotal: totals.subtotal,
+    vat: totals.vat,
+    total: totals.total,
   };
 }
 
@@ -1257,7 +1259,7 @@ function supplierName(id) {
 
 function documentTotals(rows) {
   const subtotal = rows.reduce((sum, row) => sum + lineSubtotal(row), 0);
-  const vat = subtotal * VAT_RATE;
+  const vat = rows.reduce((sum, row) => sum + lineSubtotal(row) * ((Number(row.vat) || VAT_RATE * 100) / 100), 0);
   return {
     itemCount: rows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0),
     subtotal,
@@ -1404,7 +1406,7 @@ async function signOut() {
     state.stockReservations = [];
     state.accountingSettings = blankAccountingSettings();
     state.accountingSchemaReady = true;
-    state.page = "products";
+    state.page = "work-center";
     state.modal = null;
     state.authNotice = "Atsijungėte. Prisijunkite iš naujo, kad matytumėte inventoriaus sistemą.";
     setToast("Atsijungta. Inventoriaus puslapiai paslėpti.");
@@ -1484,6 +1486,7 @@ function render() {
 function renderSidebar() {
   const showNavigation = database.isConfigured && state.currentUser;
   const items = [
+    { page: "work-center", label: "Darbo centras", icon: "◆" },
     { page: "products", label: "Prekės", icon: "□" },
     { page: "customers", label: "Klientai", icon: "◎" },
     { page: "customer-debts", label: "Klientų skolos", icon: "€" },
@@ -1582,6 +1585,7 @@ function renderPage() {
   if (!database.isConfigured || state.page === "database-setup") return renderDatabaseSetupPage();
   if (state.isLoading) return renderLoadingPage();
   if (!state.currentUser) return renderLoginPage();
+  if (state.page === "work-center") return renderWorkCenterPage();
   if (state.page === "customers") return renderCustomersPage();
   if (state.page === "customer-detail") return renderCustomerDetailPage();
   if (state.page === "customer-debts") return renderCustomerDebtsPage();
@@ -1706,6 +1710,192 @@ function metricCard(label, value) {
   `;
 }
 
+function renderWorkCenterPage() {
+  const summary = workCenterSummary();
+  const workItems = workCenterItems(summary);
+  const latestMovements = state.stockHistory.slice(0, 5);
+
+  return `
+    ${renderHeader(
+      "Darbo centras",
+      "Svarbiausi darbai vienoje vietoje.",
+      `<div class="form-actions">
+        <button class="button secondary" data-action="quick-new-receipt">Naujas pajamavimas</button>
+        <button class="button" data-action="quick-new-invoice">Nauja sąskaita</button>
+      </div>`,
+      "Šiandien",
+    )}
+    <section class="work-hero">
+      <div class="work-hero-main">
+        <p class="work-kicker">Kitas geriausias veiksmas</p>
+        <h2>${escapeHtml(workItems[0]?.title ?? "Viskas atrodo tvarkingai")}</h2>
+        <p>${escapeHtml(workItems[0]?.meta ?? "Galite tęsti nuo naujo dokumento arba peržiūrėti registrus.")}</p>
+      </div>
+      <div class="work-hero-actions">
+        ${renderWorkHeroButton(workItems[0])}
+      </div>
+    </section>
+    <div class="summary-grid">
+      ${metricCard("Mažas likutis", summary.lowStock.length)}
+      ${metricCard("Juodraščiai", summary.draftsTotal)}
+      ${metricCard("Klientų skola", formatMoney(summary.debtTotal))}
+      ${metricCard("Šio mėn. PVM įrašai", summary.monthVatEntries)}
+    </div>
+    <section class="work-layout">
+      <div class="work-column">
+        <div class="section-heading">
+          <h2>Reikia dėmesio</h2>
+          <span>${workItems.length} signalai</span>
+        </div>
+        <div class="work-card-grid">
+          ${workItems.map(renderWorkItemCard).join("")}
+        </div>
+      </div>
+      <aside class="work-side">
+        <div class="section-heading">
+          <h2>Greiti veiksmai</h2>
+          <span>Dažniausi darbai</span>
+        </div>
+        <div class="quick-grid">
+          ${quickActionButton("quick-new-receipt", "Pajamavimas", "Pirkimo prekės")}
+          ${quickActionButton("quick-new-invoice", "Sąskaita", "Pardavimas klientui")}
+          ${quickActionButton("quick-new-customer", "Klientas", "Nauja kortelė")}
+          ${quickActionButton("go-isaf-month", "i.SAF", "Šio mėnesio XML")}
+        </div>
+        <div class="section-heading recent-heading">
+          <h2>Paskutiniai judėjimai</h2>
+          <span>${latestMovements.length}</span>
+        </div>
+        <div class="recent-list">
+          ${renderRecentMovementList(latestMovements)}
+        </div>
+      </aside>
+    </section>
+  `;
+}
+
+function workCenterSummary() {
+  const lowStock = activeProducts().filter(isLowStockProduct);
+  const receiptDrafts = state.documents.filter((document) => document.status === STATUS_DRAFT);
+  const salesDrafts = state.salesDocuments.filter((document) => document.status === "DRAFT");
+  const deliveryDrafts = state.salesDocuments.filter((document) => document.type === "DELIVERY_NOTE" && document.status === "DRAFT");
+  const debtRows = customerDebtSummaries();
+  const overdueRows = debtRows.filter((row) => row.oldestDueDate && row.oldestDueDate < todayDate());
+  const accountingMissing = state.accountingSchemaReady ? missingIsafSettings() : ["buhalterijos SQL"];
+  const monthVatEntries = allVatEntries().filter((entry) => entry.date >= monthStartDate() && entry.date <= todayDate()).length;
+
+  return {
+    lowStock,
+    receiptDrafts,
+    salesDrafts,
+    deliveryDrafts,
+    debtRows,
+    overdueRows,
+    debtTotal: debtRows.reduce((sum, row) => sum + Number(row.debt || 0), 0),
+    draftsTotal: receiptDrafts.length + salesDrafts.length,
+    accountingMissing,
+    monthVatEntries,
+  };
+}
+
+function workCenterItems(summary) {
+  const items = [];
+  if (summary.lowStock.length) {
+    items.push({
+      tone: "danger",
+      title: `${summary.lowStock.length} prekės su mažu likučiu`,
+      meta: `${summary.lowStock[0].article} · ${summary.lowStock[0].name}`,
+      action: "go-low-stock",
+      label: "Atidaryti likučius",
+    });
+  }
+  if (summary.overdueRows.length) {
+    items.push({
+      tone: "danger",
+      title: `${summary.overdueRows.length} vėluojančios skolos`,
+      meta: `Vėluojanti suma: ${formatMoney(summary.overdueRows.reduce((sum, row) => sum + Number(row.overdueDebt || 0), 0))}`,
+      action: "go-customer-debts",
+      label: "Peržiūrėti skolas",
+    });
+  }
+  if (summary.draftsTotal) {
+    items.push({
+      tone: "warning",
+      title: `${summary.draftsTotal} neužbaigti dokumentai`,
+      meta: `Pajamavimai: ${summary.receiptDrafts.length}, pardavimai: ${summary.salesDrafts.length}`,
+      action: summary.receiptDrafts.length ? "go-receipt-drafts" : "go-sales-drafts",
+      label: "Sutvarkyti",
+    });
+  }
+  if (summary.deliveryDrafts.length) {
+    items.push({
+      tone: "warning",
+      title: `${summary.deliveryDrafts.length} važtaraščiai laukia patvirtinimo`,
+      meta: "Patvirtinus mažinamas faktinis sandėlio likutis.",
+      action: "go-delivery-drafts",
+      label: "Atidaryti važtaraščius",
+    });
+  }
+  if (summary.accountingMissing.length) {
+    items.push({
+      tone: "warning",
+      title: "Neužbaigti i.SAF įmonės duomenys",
+      meta: summary.accountingMissing.join(", "),
+      action: "go-accounting-settings",
+      label: "Užpildyti",
+    });
+  }
+  if (!items.length) {
+    items.push({
+      tone: "success",
+      title: "Šiandien kritinių darbų nėra",
+      meta: "Galite kurti naujus dokumentus arba tikrinti mėnesio PVM registrą.",
+      action: "go-isaf-month",
+      label: "PVM registras",
+    });
+  }
+  return items;
+}
+
+function renderWorkHeroButton(item) {
+  if (!item) return `<button class="button secondary" data-action="quick-new-receipt">Pradėti</button>`;
+  return `<button class="button ${item.tone === "danger" ? "danger" : item.tone === "warning" ? "warning" : ""}" data-action="${item.action}">${escapeHtml(item.label)}</button>`;
+}
+
+function renderWorkItemCard(item) {
+  return `
+    <article class="work-card ${item.tone}">
+      <div>
+        <span class="work-status-dot"></span>
+        <h3>${escapeHtml(item.title)}</h3>
+        <p>${escapeHtml(item.meta)}</p>
+      </div>
+      <button class="button secondary" data-action="${item.action}">${escapeHtml(item.label)}</button>
+    </article>
+  `;
+}
+
+function quickActionButton(action, title, meta) {
+  return `
+    <button class="quick-card" data-action="${action}">
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(meta)}</span>
+    </button>
+  `;
+}
+
+function renderRecentMovementList(movements) {
+  return movements.length
+    ? movements.map((movement) => `
+        <button class="recent-item" data-page="stock-history">
+          <span>${escapeHtml(movement.action)}</span>
+          <strong>${escapeHtml(movement.article || "-")}</strong>
+          <em>${formatNumber(movement.quantity)} ${escapeHtml(movement.unit)}</em>
+        </button>
+      `).join("")
+    : `<div class="compact-empty muted">Likučių judėjimų dar nėra.</div>`;
+}
+
 function textField(label, name, value, type = "text") {
   return `
     <label class="form-field">
@@ -1736,6 +1926,10 @@ function renderProductsPage() {
           ${productStatusButton("active", "Aktyvios", activeProducts().length)}
           ${productStatusButton("archived", "Archyvas", archivedProducts().length)}
           ${productStatusButton("all", "Visos", state.products.length)}
+        </div>
+        <div class="segmented-control" aria-label="Likučio filtras">
+          ${productStockButton("all", "Visi likučiai", productsForCurrentStatus().length)}
+          ${productStockButton("low", "Mažas likutis", productsForCurrentStatus().filter(isLowStockProduct).length)}
         </div>
       </div>
       <div class="toolbar-right muted" data-products-count>${products.length} iš ${visiblePool.length}</div>
@@ -1775,12 +1969,21 @@ function productStatusButton(value, label, count) {
   `;
 }
 
+function productStockButton(value, label, count) {
+  return `
+    <button class="segment-button ${state.productStockFilter === value ? "active" : ""}" data-action="set-product-stock-filter" data-stock-filter="${value}">
+      ${label} <span>${count}</span>
+    </button>
+  `;
+}
+
 function filteredProducts() {
   const query = state.productQuery.trim().toLowerCase();
   return productsForCurrentStatus().filter((product) => {
     return (
-      product.article.toLowerCase().includes(query) ||
-      product.name.toLowerCase().includes(query)
+      (state.productStockFilter !== "low" || isLowStockProduct(product)) &&
+      (product.article.toLowerCase().includes(query) ||
+        product.name.toLowerCase().includes(query))
     );
   });
 }
@@ -1797,6 +2000,11 @@ function productsForCurrentStatus() {
   if (state.productStatusFilter === "archived") return archivedProducts();
   if (state.productStatusFilter === "all") return state.products;
   return activeProducts();
+}
+
+function isLowStockProduct(product) {
+  const threshold = Math.max(5, Number(product.minimumStock) || 0);
+  return Number(product.stock) <= threshold;
 }
 
 function renderProductsRows(products) {
@@ -3961,6 +4169,7 @@ function bindEvents() {
   });
 
   bindActionButtons(document);
+  bindUnsavedFormRetention();
 
   document.querySelectorAll("[data-filter]").forEach((input) => {
     input.addEventListener("input", () => {
@@ -4072,6 +4281,34 @@ function bindActionButtons(scope) {
   });
 }
 
+function bindUnsavedFormRetention() {
+  document
+    .querySelectorAll('form[data-form="accounting-settings"] input[name], form[data-form="accounting-settings"] select[name], form[data-form="accounting-settings"] textarea[name]')
+    .forEach((input) => {
+      const handler = () => {
+        state.accountingSettings[input.name] = formInputValue(input);
+      };
+      input.addEventListener("input", handler);
+      input.addEventListener("change", handler);
+    });
+
+  document
+    .querySelectorAll('form.modal[data-form] input[name], form.modal[data-form] select[name], form.modal[data-form] textarea[name]')
+    .forEach((input) => {
+      const handler = () => {
+        if (!state.modal?.data || !input.name) return;
+        state.modal.data[input.name] = formInputValue(input);
+      };
+      input.addEventListener("input", handler);
+      input.addEventListener("change", handler);
+    });
+}
+
+function formInputValue(input) {
+  if (input.type === "checkbox") return input.checked;
+  return input.value;
+}
+
 function updateDocumentField(input) {
   const field = input.dataset.docField;
   const previousDate = state.newDoc.date;
@@ -4093,6 +4330,59 @@ async function handleAction(event) {
     state.productStatusFilter = event.currentTarget.dataset.status || "active";
     render();
     return;
+  }
+  if (action === "set-product-stock-filter") {
+    state.productStockFilter = event.currentTarget.dataset.stockFilter || "all";
+    render();
+    return;
+  }
+  if (action === "quick-new-receipt") {
+    state.newDoc = blankDocument();
+    state.page = "new-document";
+  }
+  if (action === "quick-new-invoice") {
+    state.salesTab = "INVOICE";
+    state.salesDraft = blankSalesDocument("INVOICE");
+    state.page = "new-sales-document";
+  }
+  if (action === "quick-new-customer") {
+    openCustomerModal();
+  }
+  if (action === "go-low-stock") {
+    state.productStatusFilter = "active";
+    state.productStockFilter = "low";
+    state.productQuery = "";
+    state.page = "products";
+  }
+  if (action === "go-customer-debts") {
+    state.customerDebtQuery = "";
+    state.page = "customer-debts";
+  }
+  if (action === "go-receipt-drafts") {
+    state.documentFilters = { from: "", to: "", supplierId: "", status: STATUS_DRAFT, number: "" };
+    state.page = "documents";
+  }
+  if (action === "go-sales-drafts") {
+    const firstDraft = state.salesDocuments.find((document) => document.status === "DRAFT");
+    if (firstDraft) state.salesTab = firstDraft.type;
+    state.salesFilters = { number: "", customerId: "", type: firstDraft?.type ?? "", status: "DRAFT", from: "", to: "", unpaidOnly: false, responsible: "" };
+    state.salesQuery = "";
+    state.salesPagination.page = 1;
+    state.page = "sales";
+  }
+  if (action === "go-delivery-drafts") {
+    state.salesTab = "DELIVERY_NOTE";
+    state.salesFilters = { number: "", customerId: "", type: "DELIVERY_NOTE", status: "DRAFT", from: "", to: "", unpaidOnly: false, responsible: "" };
+    state.salesQuery = "";
+    state.salesPagination.page = 1;
+    state.page = "sales";
+  }
+  if (action === "go-accounting-settings") {
+    state.page = "accounting-settings";
+  }
+  if (action === "go-isaf-month") {
+    state.vatFilters = { from: monthStartDate(), to: todayDate(), register: "ALL" };
+    state.page = "isaf-export";
   }
   if (action === "add-customer") openCustomerModal();
   if (action === "edit-customer") openCustomerModal(state.customers.find((item) => idsEqual(item.id, id)));

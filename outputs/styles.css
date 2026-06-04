@@ -249,6 +249,195 @@ h1 {
   font-weight: 800;
 }
 
+.work-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 18px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.work-hero-main {
+  display: grid;
+  gap: 6px;
+}
+
+.work-hero-main h2,
+.section-heading h2,
+.work-card h3 {
+  margin: 0;
+}
+
+.work-hero-main h2 {
+  font-size: 22px;
+}
+
+.work-hero-main p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.work-kicker {
+  color: var(--accent-dark) !important;
+  font-size: 12px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.work-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+
+.work-column,
+.work-side {
+  display: grid;
+  gap: 12px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+}
+
+.section-heading h2 {
+  font-size: 18px;
+}
+
+.section-heading span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.work-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.work-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 132px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.work-card h3 {
+  margin-top: 8px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.work-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.work-status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.work-card.warning .work-status-dot {
+  background: var(--warn);
+}
+
+.work-card.danger .work-status-dot {
+  background: var(--danger);
+}
+
+.work-card.success .work-status-dot {
+  background: var(--success);
+}
+
+.quick-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.quick-card,
+.recent-item {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  text-align: left;
+}
+
+.quick-card {
+  display: grid;
+  gap: 5px;
+  min-height: 74px;
+  padding: 14px;
+}
+
+.quick-card:hover,
+.recent-item:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.quick-card strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.quick-card span,
+.recent-item span,
+.recent-item em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.recent-heading {
+  margin-top: 8px;
+}
+
+.recent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recent-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  padding: 12px;
+}
+
+.recent-item span {
+  grid-column: 1 / -1;
+}
+
+.recent-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
