@@ -274,6 +274,9 @@ function blankPriceImport() {
   };
 }
 
+const SPREADSHEET_IMPORT_LIBRARY_URL = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+let spreadsheetImportLibraryPromise = null;
+
 const state = {
   page: database.isConfigured ? "work-center" : "database-setup",
   products: [],
@@ -2239,7 +2242,7 @@ function renderPriceImportPage() {
   return `
     ${renderHeader(
       "Kainininkai",
-      "Įkelkite gamintojo CSV arba TXT kainininką su prekių kodais ir atnaujinkite kainas per peržiūrą.",
+      "Įkelkite gamintojo Excel, CSV arba TXT kainininką su prekių kodais ir atnaujinkite kainas per peržiūrą.",
       `<button class="button secondary" data-action="download-price-template">Atsisiųsti šabloną</button>`,
       "Prekės",
     )}
@@ -2254,7 +2257,7 @@ function renderPriceImportPage() {
         <div class="price-import-inputs">
           <label class="form-field">
             <span class="label">Gamintojo kainininko failas</span>
-            <input class="input file-input" data-price-import-file type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain" />
+            <input class="input file-input" data-price-import-file type="file" accept=".xlsx,.xls,.xlsm,.ods,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values,text/plain" />
           </label>
           <label class="form-field">
             <span class="label">Arba įklijuokite lentelę</span>
@@ -2270,7 +2273,7 @@ function renderPriceImportPage() {
           ${priceImportOption("updateManufacturer", "Gamintoją")}
           ${priceImportOption("createMissing", "Sukurti prekes, kurių dar nėra sąraše")}
           <div class="auth-message import-note">
-            Sistema atpažįsta dažnus stulpelius: artikulas, kodas, SKU, pavadinimas, gamintojas, savikaina, pardavimo kaina, price, VAT. Excel lentelę galima nukopijuoti tiesiai į lauką arba išsaugoti kaip CSV.
+            Sistema priima Excel, CSV ir nukopijuotą lentelę. Atpažįstami dažni stulpeliai: artikulas, kodas, SKU, pavadinimas, gamintojas, savikaina, pardavimo kaina, price, VAT.
           </div>
         </div>
       </div>
@@ -2428,6 +2431,46 @@ function priceImportSummary() {
     },
     { total: 0, update: 0, create: 0, skip: 0 },
   );
+}
+
+async function readPriceImportFile(file) {
+  if (isSpreadsheetImportFile(file)) {
+    return readSpreadsheetImportFile(file);
+  }
+  return file.text();
+}
+
+function isSpreadsheetImportFile(file) {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  return ["xlsx", "xls", "xlsm", "ods"].includes(extension);
+}
+
+async function readSpreadsheetImportFile(file) {
+  const xlsx = await loadSpreadsheetImportLibrary();
+  const buffer = await file.arrayBuffer();
+  const workbook = xlsx.read(buffer, { type: "array", cellDates: false });
+  const sheetName = workbook.SheetNames?.[0];
+  if (!sheetName) throw new Error("Excel faile nerasta lapų.");
+  const sheet = workbook.Sheets[sheetName];
+  return xlsx.utils.sheet_to_csv(sheet, { FS: ";", RS: "\n", blankrows: false });
+}
+
+async function loadSpreadsheetImportLibrary() {
+  if (window.XLSX) return window.XLSX;
+  if (!spreadsheetImportLibraryPromise) {
+    spreadsheetImportLibraryPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = SPREADSHEET_IMPORT_LIBRARY_URL;
+      script.async = true;
+      script.onload = () => {
+        if (window.XLSX) resolve(window.XLSX);
+        else reject(new Error("Excel skaitymo modulis neįsikėlė."));
+      };
+      script.onerror = () => reject(new Error("Nepavyko įkelti Excel skaitymo modulio. Patikrinkite interneto ryšį arba įkelkite CSV failą."));
+      document.head.appendChild(script);
+    });
+  }
+  return spreadsheetImportLibraryPromise;
 }
 
 function parseCurrentPriceImport({ notify = false } = {}) {
@@ -5120,9 +5163,18 @@ function bindPriceImportEvents() {
   document.querySelector("[data-price-import-file]")?.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    state.priceImport.text = await file.text();
-    parseCurrentPriceImport();
-    render();
+    try {
+      state.priceImport.errors = [];
+      state.priceImport.text = await readPriceImportFile(file);
+      parseCurrentPriceImport();
+      setToast(`Failas „${file.name}“ nuskaitytas.`);
+    } catch (error) {
+      state.priceImport.rows = [];
+      state.priceImport.errors = [error.message || "Nepavyko nuskaityti kainininko failo."];
+      setToast("Nepavyko nuskaityti kainininko failo.");
+    } finally {
+      render();
+    }
   });
 
   document.querySelectorAll("[data-price-import-option]").forEach((input) => {
