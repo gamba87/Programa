@@ -270,6 +270,39 @@ h1 {
   flex-wrap: wrap;
 }
 
+.segmented-control {
+  display: inline-flex;
+  min-height: 40px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.segment-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.segment-button.active {
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+}
+
+.segment-button span {
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
 .checkbox-field {
   display: inline-flex;
   align-items: center;
@@ -450,6 +483,12 @@ tbody tr:last-child td {
   color: var(--muted);
 }
 
+.small-text {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .actions-cell {
   width: 118px;
   text-align: right;
@@ -495,6 +534,10 @@ tbody tr:last-child td {
 
 .danger-link:hover {
   background: #fecdca;
+}
+
+.danger-text {
+  color: var(--danger);
 }
 
 .sales-row-actions {
@@ -633,6 +676,11 @@ tbody tr:last-child td {
   display: grid;
   grid-template-columns: repeat(2, minmax(260px, 1fr));
   gap: 16px;
+}
+
+.form-footer {
+  justify-content: flex-end;
+  margin-top: 18px;
 }
 
 .form-field {

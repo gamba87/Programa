@@ -267,6 +267,8 @@ const state = {
   customers: [],
   salesDocuments: [],
   stockReservations: [],
+  accountingSettings: blankAccountingSettings(),
+  accountingSchemaReady: true,
   salesSchemaReady: true,
   salesAdvancedReady: false,
   selectedDocumentId: null,
@@ -274,8 +276,16 @@ const state = {
   selectedCustomerId: null,
   selectedSalesDocumentId: null,
   productQuery: "",
+  productStatusFilter: "active",
   stockHistoryQuery: "",
   customerQuery: "",
+  customerDebtQuery: "",
+  numberingDate: todayDate(),
+  vatFilters: {
+    from: monthStartDate(),
+    to: todayDate(),
+    register: "ALL",
+  },
   salesTab: "OFFER",
   salesQuery: "",
   salesSort: { field: "date", direction: "desc" },
@@ -398,8 +408,27 @@ function blankSalesRow() {
   };
 }
 
+function blankAccountingSettings() {
+  return {
+    id: "main",
+    companyName: "",
+    companyCode: "",
+    vatCode: "",
+    address: "",
+    email: "",
+    phone: "",
+    defaultCurrency: "EUR",
+    softwareName: "Inventoriaus valdymas",
+    softwareVersion: "1.0",
+  };
+}
+
 function todayDate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function monthStartDate(date = todayDate()) {
+  return `${date.slice(0, 7)}-01`;
 }
 
 function addDays(date, days) {
@@ -516,6 +545,27 @@ function isOptionalSalesSchemaUnavailable(error) {
   return isMissingOptionalSalesSchema(error) || isPermissionDenied(error);
 }
 
+function isOptionalSchemaUnavailable(error) {
+  return isMissingOptionalSalesSchema(error) || isPermissionDenied(error);
+}
+
+async function loadAccountingBundle(db) {
+  const settings = await db.from("accounting_settings").select("*").eq("id", "main").maybeSingle();
+
+  if (settings.error && isOptionalSchemaUnavailable(settings.error)) {
+    return {
+      schemaReady: false,
+      settings: blankAccountingSettings(),
+    };
+  }
+  if (settings.error) throw new Error(settings.error.message || "Nepavyko įkelti buhalterijos nustatymų.");
+
+  return {
+    schemaReady: true,
+    settings: settings.data ? fromDbAccountingSettings(settings.data) : blankAccountingSettings(),
+  };
+}
+
 async function loadSalesBundle(db) {
   const [customers, documents, lines, payments, relations, reservations] = await Promise.all([
     db.from("customers").select("*").order("name", { ascending: true }),
@@ -579,8 +629,8 @@ function createSupabaseDatabase(client, isConfigured) {
     isConfigured,
     async loadAll() {
       const db = ensureClient();
-      const [products, suppliers, documents, movements, salesBundle] = await Promise.all([
-        db.from("products").select("*").eq("is_active", true).order("article_code", { ascending: true }),
+      const [products, suppliers, documents, movements, salesBundle, accountingBundle] = await Promise.all([
+        db.from("products").select("*").order("article_code", { ascending: true }),
         db.from("suppliers").select("*").eq("is_active", true).order("company_name", { ascending: true }),
         db.from("receipt_documents").select("*,receipt_document_lines(*)").order("created_at", { ascending: false }),
         db
@@ -588,6 +638,7 @@ function createSupabaseDatabase(client, isConfigured) {
           .select("*,products(article_code,name,unit),receipt_documents(document_number)")
           .order("created_at", { ascending: false }),
         loadSalesBundle(db),
+        loadAccountingBundle(db),
       ]);
       return {
         products: unwrap(products).map(fromDbProduct),
@@ -597,6 +648,8 @@ function createSupabaseDatabase(client, isConfigured) {
         customers: salesBundle.customers,
         salesDocuments: salesBundle.salesDocuments,
         stockReservations: salesBundle.stockReservations,
+        accountingSettings: accountingBundle.settings,
+        accountingSchemaReady: accountingBundle.schemaReady,
         salesSchemaReady: salesBundle.schemaReady,
         salesAdvancedReady: salesBundle.advancedReady,
       };
@@ -638,6 +691,23 @@ function createSupabaseDatabase(client, isConfigured) {
         await db.from("products").update({ is_active: false }).eq("id", id),
         "Nepavyko pašalinti prekės.",
       );
+    },
+    async restoreProduct(id) {
+      unwrap(
+        await ensureClient().from("products").update({ is_active: true }).eq("id", id),
+        "Nepavyko grąžinti prekės į aktyvų sąrašą.",
+      );
+    },
+    async saveAccountingSettings(settings) {
+      const saved = unwrap(
+        await ensureClient()
+          .from("accounting_settings")
+          .upsert(toDbAccountingSettings(settings), { onConflict: "id" })
+          .select()
+          .single(),
+        "Nepavyko išsaugoti įmonės buhalterijos nustatymų.",
+      );
+      return fromDbAccountingSettings(saved);
     },
     async saveSupplier(supplier) {
       const db = ensureClient();
@@ -822,6 +892,7 @@ function fromDbProduct(product) {
     price: Number(product.sale_price) || 0,
     vat: Number(product.vat_rate) || 0,
     notes: product.notes ?? "",
+    isActive: product.is_active !== false,
   };
 }
 
@@ -839,7 +910,7 @@ function toDbProduct(product) {
     sale_price: Number(product.price) || 0,
     vat_rate: Number(product.vat) || 21,
     notes: product.notes ?? "",
-    is_active: true,
+    is_active: product.isActive !== false,
   };
 }
 
@@ -854,6 +925,7 @@ function fromDbSupplier(supplier) {
     phone: supplier.phone ?? "",
     address: supplier.address ?? "",
     notes: supplier.notes ?? "",
+    isActive: supplier.is_active !== false,
   };
 }
 
@@ -867,7 +939,37 @@ function toDbSupplier(supplier) {
     phone: supplier.phone,
     address: supplier.address ?? "",
     notes: supplier.notes ?? "",
-    is_active: true,
+    is_active: supplier.isActive !== false,
+  };
+}
+
+function fromDbAccountingSettings(settings) {
+  return {
+    id: settings.id ?? "main",
+    companyName: settings.company_name ?? "",
+    companyCode: settings.company_code ?? "",
+    vatCode: settings.vat_code ?? "",
+    address: settings.address ?? "",
+    email: settings.email ?? "",
+    phone: settings.phone ?? "",
+    defaultCurrency: settings.default_currency ?? "EUR",
+    softwareName: settings.software_name ?? "Inventoriaus valdymas",
+    softwareVersion: settings.software_version ?? "1.0",
+  };
+}
+
+function toDbAccountingSettings(settings) {
+  return {
+    id: "main",
+    company_name: settings.companyName,
+    company_code: settings.companyCode,
+    vat_code: settings.vatCode,
+    address: settings.address,
+    email: settings.email,
+    phone: settings.phone,
+    default_currency: settings.defaultCurrency || "EUR",
+    software_name: settings.softwareName || "Inventoriaus valdymas",
+    software_version: settings.softwareVersion || "1.0",
   };
 }
 
@@ -1300,6 +1402,8 @@ async function signOut() {
     state.customers = [];
     state.salesDocuments = [];
     state.stockReservations = [];
+    state.accountingSettings = blankAccountingSettings();
+    state.accountingSchemaReady = true;
     state.page = "products";
     state.modal = null;
     state.authNotice = "Atsijungėte. Prisijunkite iš naujo, kad matytumėte inventoriaus sistemą.";
@@ -1331,6 +1435,8 @@ async function reloadAllData() {
     state.customers = data.customers;
     state.salesDocuments = data.salesDocuments;
     state.stockReservations = data.stockReservations;
+    state.accountingSettings = data.accountingSettings;
+    state.accountingSchemaReady = data.accountingSchemaReady;
     state.salesSchemaReady = data.salesSchemaReady;
     state.salesAdvancedReady = data.salesAdvancedReady;
     state.newDoc = blankDocument();
@@ -1380,6 +1486,7 @@ function renderSidebar() {
   const items = [
     { page: "products", label: "Prekės", icon: "□" },
     { page: "customers", label: "Klientai", icon: "◎" },
+    { page: "customer-debts", label: "Klientų skolos", icon: "€" },
     { page: "suppliers", label: "Tiekėjai", icon: "◇" },
     { page: "documents", label: "Pajamavimo dokumentai", icon: "≡" },
     { page: "stock-history", label: "Likučių istorija", icon: "↕" },
@@ -1423,6 +1530,27 @@ function renderSidebar() {
                     <span class="nav-icon">+</span>
                     <span>Naujas dokumentas</span>
                   </button>
+                  <button class="nav-button sub-button ${state.page === "numbering" ? "active" : ""}" data-page="numbering">
+                    <span class="nav-icon">#</span>
+                    <span>Numeracija</span>
+                  </button>
+                </div>
+              </details>
+              <details class="nav-section" open>
+                <summary>Buhalterija</summary>
+                <div class="nav-sub">
+                  <button class="nav-button sub-button ${state.page === "vat-registers" ? "active" : ""}" data-page="vat-registers">
+                    <span class="nav-icon">%</span>
+                    <span>PVM registrai</span>
+                  </button>
+                  <button class="nav-button sub-button ${state.page === "isaf-export" ? "active" : ""}" data-page="isaf-export">
+                    <span class="nav-icon">XML</span>
+                    <span>i.SAF eksportas</span>
+                  </button>
+                  <button class="nav-button sub-button ${state.page === "accounting-settings" ? "active" : ""}" data-page="accounting-settings">
+                    <span class="nav-icon">⚙</span>
+                    <span>Įmonės nustatymai</span>
+                  </button>
                 </div>
               </details>
             </nav>`
@@ -1456,9 +1584,14 @@ function renderPage() {
   if (!state.currentUser) return renderLoginPage();
   if (state.page === "customers") return renderCustomersPage();
   if (state.page === "customer-detail") return renderCustomerDetailPage();
+  if (state.page === "customer-debts") return renderCustomerDebtsPage();
   if (state.page === "sales") return renderSalesPage();
   if (state.page === "new-sales-document") return renderNewSalesDocumentPage();
   if (state.page === "sales-document-detail") return renderSalesDocumentDetailPage();
+  if (state.page === "numbering") return renderNumberingPage();
+  if (state.page === "vat-registers") return renderVatRegistersPage();
+  if (state.page === "isaf-export") return renderIsafExportPage();
+  if (state.page === "accounting-settings") return renderAccountingSettingsPage();
   if (state.page === "suppliers") return renderSuppliersPage();
   if (state.page === "documents") return renderDocumentsPage();
   if (state.page === "new-document") return renderNewDocumentPage();
@@ -1519,11 +1652,11 @@ function renderLoadingPage() {
   `;
 }
 
-function renderHeader(title, meta, action = "") {
+function renderHeader(title, meta, action = "", eyebrow = "Sandėlis") {
   return `
     <header class="page-header">
       <div>
-        <p class="eyebrow">Sandėlis</p>
+        <p class="eyebrow">${escapeHtml(eyebrow)}</p>
         <h1>${title}</h1>
         <p class="header-meta">${meta}</p>
       </div>
@@ -1533,9 +1666,10 @@ function renderHeader(title, meta, action = "") {
 }
 
 function renderMetrics() {
-  const totalStock = state.products.reduce((sum, product) => sum + Number(product.stock), 0);
-  const lowStock = state.products.filter((product) => Number(product.stock) <= 5).length;
-  const totalValue = state.products.reduce(
+  const products = activeProducts();
+  const totalStock = products.reduce((sum, product) => sum + Number(product.stock), 0);
+  const lowStock = products.filter((product) => Number(product.stock) <= 5).length;
+  const totalValue = products.reduce(
     (sum, product) => sum + Number(product.stock) * Number(product.cost),
     0,
   );
@@ -1563,8 +1697,27 @@ function renderMetrics() {
   `;
 }
 
+function metricCard(label, value) {
+  return `
+    <article class="metric">
+      <p class="metric-label">${escapeHtml(label)}</p>
+      <p class="metric-value">${escapeHtml(value)}</p>
+    </article>
+  `;
+}
+
+function textField(label, name, value, type = "text") {
+  return `
+    <label class="form-field">
+      <span class="label">${label}</span>
+      <input class="input" name="${name}" type="${type}" value="${escapeHtml(value)}" />
+    </label>
+  `;
+}
+
 function renderProductsPage() {
   const products = filteredProducts();
+  const visiblePool = productsForCurrentStatus();
 
   return `
     ${renderHeader(
@@ -1579,8 +1732,13 @@ function renderProductsPage() {
           <span class="search-icon">⌕</span>
           <input class="input" data-product-search value="${escapeHtml(state.productQuery)}" placeholder="Ieškoti pagal artikulą arba pavadinimą" />
         </label>
+        <div class="segmented-control" aria-label="Prekių būsena">
+          ${productStatusButton("active", "Aktyvios", activeProducts().length)}
+          ${productStatusButton("archived", "Archyvas", archivedProducts().length)}
+          ${productStatusButton("all", "Visos", state.products.length)}
+        </div>
       </div>
-      <div class="toolbar-right muted" data-products-count>${products.length} iš ${state.products.length}</div>
+      <div class="toolbar-right muted" data-products-count>${products.length} iš ${visiblePool.length}</div>
     </div>
     <section class="table-panel">
       <div class="table-scroll">
@@ -1596,6 +1754,7 @@ function renderProductsPage() {
               <th class="num">Savikaina</th>
               <th class="num">Pardavimo kaina</th>
               <th class="num">PVM</th>
+              <th>Būsena</th>
               <th class="actions-cell"></th>
             </tr>
           </thead>
@@ -1608,14 +1767,36 @@ function renderProductsPage() {
   `;
 }
 
+function productStatusButton(value, label, count) {
+  return `
+    <button class="segment-button ${state.productStatusFilter === value ? "active" : ""}" data-action="set-product-status-filter" data-status="${value}">
+      ${label} <span>${count}</span>
+    </button>
+  `;
+}
+
 function filteredProducts() {
   const query = state.productQuery.trim().toLowerCase();
-  return state.products.filter((product) => {
+  return productsForCurrentStatus().filter((product) => {
     return (
       product.article.toLowerCase().includes(query) ||
       product.name.toLowerCase().includes(query)
     );
   });
+}
+
+function activeProducts() {
+  return state.products.filter((product) => product.isActive !== false);
+}
+
+function archivedProducts() {
+  return state.products.filter((product) => product.isActive === false);
+}
+
+function productsForCurrentStatus() {
+  if (state.productStatusFilter === "archived") return archivedProducts();
+  if (state.productStatusFilter === "all") return state.products;
+  return activeProducts();
 }
 
 function renderProductsRows(products) {
@@ -1634,18 +1815,27 @@ function renderProductsRows(products) {
               <td class="num">${formatMoney(product.cost)}</td>
               <td class="num">${formatMoney(product.price)}</td>
               <td class="num">${formatNumber(product.vat)} %</td>
+              <td>${renderAvailabilityBadge(product.isActive !== false ? "Aktyvi" : "Archyve", product.isActive !== false)}</td>
               <td class="actions-cell">
                 <div class="action-group">
                   <button class="link-button" data-action="view-product" data-id="${product.id}">Peržiūrėti</button>
                   <button class="link-button" data-action="edit-product" data-id="${product.id}">✎ Redaguoti</button>
-                  <button class="link-button danger-link" data-action="delete-product" data-id="${product.id}" ${deleteBlocked ? `disabled title="${escapeHtml(productDeleteBlockMessage(product))}"` : ""}>Pašalinti</button>
+                  ${
+                    product.isActive === false
+                      ? `<button class="link-button" data-action="restore-product" data-id="${product.id}">Grąžinti</button>`
+                      : `<button class="link-button danger-link" data-action="delete-product" data-id="${product.id}" ${deleteBlocked ? `disabled title="${escapeHtml(productDeleteBlockMessage(product))}"` : ""}>Pašalinti</button>`
+                  }
                 </div>
               </td>
             </tr>
           `;
         })
         .join("")
-    : `<tr><td colspan="10"><div class="empty-state">Nerasta prekių pagal pasirinktą paiešką.</div></td></tr>`;
+    : `<tr><td colspan="11"><div class="empty-state">Nerasta prekių pagal pasirinktą paiešką.</div></td></tr>`;
+}
+
+function renderAvailabilityBadge(label, isActive) {
+  return `<span class="badge ${isActive ? "success" : "warning"}">${escapeHtml(label)}</span>`;
 }
 
 function renderProductDetailPage() {
@@ -1669,7 +1859,11 @@ function renderProductDetailPage() {
       `<div class="form-actions">
         <button class="button secondary" data-action="back-to-products">Grįžti į sąrašą</button>
         <button class="button" data-action="edit-product" data-id="${product.id}">Redaguoti</button>
-        <button class="button danger" data-action="delete-product" data-id="${product.id}" ${deleteBlockedMessage ? `disabled title="${escapeHtml(deleteBlockedMessage)}"` : ""}>Pašalinti</button>
+        ${
+          product.isActive === false
+            ? `<button class="button" data-action="restore-product" data-id="${product.id}">Grąžinti į aktyvias</button>`
+            : `<button class="button danger" data-action="delete-product" data-id="${product.id}" ${deleteBlockedMessage ? `disabled title="${escapeHtml(deleteBlockedMessage)}"` : ""}>Pašalinti</button>`
+        }
       </div>`,
     )}
     <section class="document-panel">
@@ -1681,6 +1875,7 @@ function renderProductDetailPage() {
         ${detailItem("Savikaina", formatMoney(product.cost))}
         ${detailItem("Pardavimo kaina", formatMoney(product.price))}
         ${detailItem("PVM", `${formatNumber(product.vat)} %`)}
+        ${detailItem("Būsena", product.isActive === false ? "Archyve" : "Aktyvi")}
         ${detailItem("Faktinis likutis", `${formatNumber(product.stock)} ${escapeHtml(product.unit)}`)}
         ${detailItem("Rezervuota", `${formatNumber(reserved)} ${escapeHtml(product.unit)}`)}
         ${detailItem("Laisvas likutis", `${formatNumber(freeStock)} ${escapeHtml(product.unit)}`)}
@@ -1899,6 +2094,196 @@ function filteredCustomers() {
   });
 }
 
+function renderCustomerDebtsPage() {
+  if (!state.salesSchemaReady) return renderSalesSchemaNotice("Klientų skolos");
+  const debts = filteredCustomerDebts();
+  const totalDebt = debts.reduce((sum, row) => sum + row.debt, 0);
+  const overdueDebt = debts.reduce((sum, row) => sum + row.overdueDebt, 0);
+
+  return `
+    ${renderHeader("Klientų skolos", "Neapmokėti pardavimo dokumentai pagal klientus.")}
+    <section class="summary-grid" aria-label="Skolų santrauka">
+      <article class="metric"><p class="metric-label">Bendra skola</p><p class="metric-value">${formatMoney(totalDebt)}</p></article>
+      <article class="metric"><p class="metric-label">Pradelsta</p><p class="metric-value">${formatMoney(overdueDebt)}</p></article>
+      <article class="metric"><p class="metric-label">Klientai su skola</p><p class="metric-value">${debts.length}</p></article>
+      <article class="metric"><p class="metric-label">Dokumentai</p><p class="metric-value">${debts.reduce((sum, row) => sum + row.documentCount, 0)}</p></article>
+    </section>
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <label class="search">
+          <span class="search-icon">⌕</span>
+          <input class="input" data-customer-debt-search value="${escapeHtml(state.customerDebtQuery)}" placeholder="Ieškoti kliento arba dokumento" />
+        </label>
+      </div>
+      <div class="toolbar-right muted">${debts.length} klientai</div>
+    </div>
+    <section class="table-panel">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Klientas</th>
+              <th>Dokumentai</th>
+              <th class="num">Skola</th>
+              <th class="num">Pradelsta</th>
+              <th>Seniausias terminas</th>
+              <th>Paskutinis dokumentas</th>
+              <th class="actions-cell">Veiksmai</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${debts.length ? debts.map(renderCustomerDebtRow).join("") : `<tr><td colspan="7"><div class="empty-state">Neapmokėtų klientų skolų nėra.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function filteredCustomerDebts() {
+  const query = state.customerDebtQuery.trim().toLowerCase();
+  return customerDebtSummaries()
+    .filter((row) => {
+      if (!query) return true;
+      return `${row.customer.name} ${row.customer.companyCode} ${row.documents.map((document) => document.number).join(" ")}`.toLowerCase().includes(query);
+    })
+    .sort((a, b) => b.debt - a.debt);
+}
+
+function customerDebtSummaries() {
+  return state.customers
+    .map((customer) => {
+      const documents = state.salesDocuments.filter((document) =>
+        idsEqual(document.customerId, customer.id) &&
+        isCustomerDebtDocument(document) &&
+        Number(document.debt) > 0,
+      );
+      const debt = documents.reduce((sum, document) => sum + Number(document.debt), 0);
+      const overdueDocuments = documents.filter((document) => document.dueDate && document.dueDate < todayDate());
+      return {
+        customer,
+        documents,
+        debt,
+        overdueDebt: overdueDocuments.reduce((sum, document) => sum + Number(document.debt), 0),
+        documentCount: documents.length,
+        oldestDueDate: documents.map((document) => document.dueDate).filter(Boolean).sort()[0] ?? "",
+        lastDocument: documents.slice().sort((a, b) => new Date(b.date) - new Date(a.date))[0],
+      };
+    })
+    .filter((row) => row.debt > 0);
+}
+
+function isCustomerDebtDocument(document) {
+  return (
+    ["ORDER", "PREPAYMENT_INVOICE", "INVOICE", "DELIVERY_NOTE"].includes(document.type) &&
+    ["CONFIRMED", "PARTIALLY_PAID"].includes(document.status)
+  );
+}
+
+function isFinalizedCustomerSalesDocument(document) {
+  return (
+    ["ORDER", "PREPAYMENT_INVOICE", "INVOICE", "DELIVERY_NOTE"].includes(document.type) &&
+    !["DRAFT", "CANCELLED"].includes(document.status)
+  );
+}
+
+function salesVatEntries() {
+  return state.salesDocuments
+    .filter((document) =>
+      ["PREPAYMENT_INVOICE", "INVOICE"].includes(document.type) &&
+      !["DRAFT", "CANCELLED"].includes(document.status),
+    )
+    .map((document) => {
+      const customer = state.customers.find((item) => idsEqual(item.id, document.customerId)) ?? {};
+      return {
+        register: "sales",
+        date: document.date,
+        number: document.number,
+        internalNumber: document.number,
+        partyName: customer.name ?? "",
+        partyCode: customer.companyCode ?? "",
+        partyVatCode: customer.vatCode ?? "",
+        subtotal: Number(document.subtotal) || 0,
+        vat: Number(document.vat) || 0,
+        total: Number(document.total) || 0,
+        status: document.status,
+        sourceLabel: salesTypeLabel(document.type),
+        documentId: document.id,
+      };
+    });
+}
+
+function purchaseVatEntries() {
+  return state.documents
+    .filter((document) => document.status === STATUS_CONFIRMED)
+    .map((document) => {
+      const supplier = state.suppliers.find((item) => idsEqual(item.id, document.supplierId)) ?? {};
+      const supplierDocumentNumber = document.supplierDocumentNumber || document.number;
+      return {
+        register: "purchase",
+        date: document.date,
+        number: supplierDocumentNumber,
+        internalNumber: document.number,
+        partyName: supplier.name ?? "",
+        partyCode: supplier.code ?? "",
+        partyVatCode: supplier.vatCode ?? "",
+        subtotal: Number(document.subtotal) || 0,
+        vat: Number(document.vat) || 0,
+        total: Number(document.total) || 0,
+        status: document.status,
+        sourceLabel: "Pajamavimas",
+        documentId: document.id,
+      };
+    });
+}
+
+function allVatEntries() {
+  return [...salesVatEntries(), ...purchaseVatEntries()].sort((left, right) =>
+    `${right.date}${right.number}`.localeCompare(`${left.date}${left.number}`, "lt"),
+  );
+}
+
+function vatEntryMatchesDate(entry) {
+  return (
+    (!state.vatFilters.from || entry.date >= state.vatFilters.from) &&
+    (!state.vatFilters.to || entry.date <= state.vatFilters.to)
+  );
+}
+
+function filteredVatEntries() {
+  return allVatEntries().filter((entry) => {
+    return (
+      vatEntryMatchesDate(entry) &&
+      (state.vatFilters.register === "ALL" || entry.register === state.vatFilters.register)
+    );
+  });
+}
+
+function vatRegisterTotals(entries) {
+  return entries.reduce(
+    (totals, entry) => ({
+      subtotal: totals.subtotal + Number(entry.subtotal || 0),
+      vat: totals.vat + Number(entry.vat || 0),
+      total: totals.total + Number(entry.total || 0),
+    }),
+    { subtotal: 0, vat: 0, total: 0 },
+  );
+}
+
+function renderCustomerDebtRow(row) {
+  return `
+    <tr>
+      <td><strong>${escapeHtml(row.customer.name)}</strong></td>
+      <td>${row.documents.map((document) => `<button class="plain-link" data-action="view-sales-document" data-id="${document.id}">${escapeHtml(document.number)}</button>`).join(", ")}</td>
+      <td class="num"><strong>${formatMoney(row.debt)}</strong></td>
+      <td class="num">${row.overdueDebt > 0 ? `<strong class="danger-text">${formatMoney(row.overdueDebt)}</strong>` : formatMoney(0)}</td>
+      <td>${row.oldestDueDate ? formatDate(row.oldestDueDate) : "-"}</td>
+      <td>${row.lastDocument ? formatDate(row.lastDocument.date) : "-"}</td>
+      <td class="actions-cell"><button class="link-button" data-action="view-customer" data-id="${row.customer.id}">Kortelė</button></td>
+    </tr>
+  `;
+}
+
 function renderCustomerDetailPage() {
   if (!state.salesSchemaReady) return renderSalesSchemaNotice("Klientai");
   const customer = state.customers.find((item) => idsEqual(item.id, state.selectedCustomerId));
@@ -1909,10 +2294,11 @@ function renderCustomerDetailPage() {
     `;
   }
   const documents = state.salesDocuments.filter((document) => idsEqual(document.customerId, customer.id));
-  const activeDocs = documents.filter((document) => document.status !== "CANCELLED");
-  const totalSales = activeDocs.reduce((sum, document) => sum + Number(document.total), 0);
-  const debt = activeDocs.reduce((sum, document) => sum + Number(document.debt), 0);
-  const lastPurchase = activeDocs
+  const finalizedDocs = documents.filter(isFinalizedCustomerSalesDocument);
+  const debtDocs = documents.filter(isCustomerDebtDocument);
+  const totalSales = finalizedDocs.reduce((sum, document) => sum + Number(document.total), 0);
+  const debt = debtDocs.reduce((sum, document) => sum + Number(document.debt), 0);
+  const lastPurchase = finalizedDocs
     .map((document) => document.date)
     .sort()
     .at(-1);
@@ -2166,12 +2552,287 @@ function renderSalesSchemaNotice(title = "Pardavimai") {
   `;
 }
 
+function renderAccountingSchemaNotice(title = "Buhalterija") {
+  return `
+    ${renderHeader(title, "Buhalterijos nustatymų lentelė dar neįjungta.", "", "Buhalterija")}
+    <section class="document-panel">
+      <div class="setup-block">
+        <h2>Reikia paleisti buhalterijos SQL migraciją</h2>
+        <p>Supabase SQL Editor lange paleiskite failą <strong>outputs/supabase-accounting-module.sql</strong>. Po to perkraukite šį puslapį.</p>
+      </div>
+    </section>
+  `;
+}
+
+function renderVatRegistersPage() {
+  if (!state.accountingSchemaReady) return renderAccountingSchemaNotice("PVM registrai");
+  const entries = filteredVatEntries();
+  const totals = vatRegisterTotals(entries);
+  const salesTotals = vatRegisterTotals(salesVatEntries().filter(vatEntryMatchesDate));
+  const purchaseTotals = vatRegisterTotals(purchaseVatEntries().filter(vatEntryMatchesDate));
+  const payableVat = salesTotals.vat - purchaseTotals.vat;
+
+  return `
+    ${renderHeader(
+      "PVM registrai",
+      "Pirkimų ir pardavimų PVM pagal patvirtintus dokumentus.",
+      `<div class="form-actions">
+        <button class="button secondary" data-action="download-vat-csv">CSV eksportas</button>
+        <button class="button" data-page="isaf-export">i.SAF eksportas</button>
+      </div>`,
+      "Buhalterija",
+    )}
+    ${renderVatFiltersToolbar()}
+    <div class="summary-grid">
+      ${metricCard("Įrašų", entries.length)}
+      ${metricCard("Pardavimo PVM", formatMoney(salesTotals.vat))}
+      ${metricCard("Pirkimo PVM", formatMoney(purchaseTotals.vat))}
+      ${metricCard("Mokėtinas PVM", formatMoney(payableVat))}
+    </div>
+    <section class="table-panel">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Registras</th>
+              <th>Data</th>
+              <th>Dokumentas</th>
+              <th>Partneris</th>
+              <th>Kodas</th>
+              <th>PVM kodas</th>
+              <th class="num">Suma be PVM</th>
+              <th class="num">PVM</th>
+              <th class="num">Bendra suma</th>
+              <th>Šaltinis</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${renderVatRegisterRows(entries)}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderIsafExportPage() {
+  if (!state.accountingSchemaReady) return renderAccountingSchemaNotice("i.SAF eksportas");
+  const settings = state.accountingSettings;
+  const salesEntries = salesVatEntries().filter(vatEntryMatchesDate);
+  const purchaseEntries = purchaseVatEntries().filter(vatEntryMatchesDate);
+  const entries = filteredVatEntries();
+  const missing = missingIsafSettings();
+  const exportDisabled = missing.length ? "disabled" : "";
+
+  return `
+    ${renderHeader(
+      "i.SAF eksportas",
+      "VMI i.SAF rinkmena rankiniam įkėlimui į i.MAS.",
+      `<div class="form-actions">
+        <button class="button secondary" data-page="accounting-settings">Įmonės nustatymai</button>
+        <button class="button" data-action="download-isaf-xml" ${exportDisabled}>Atsisiųsti XML</button>
+      </div>`,
+      "Buhalterija",
+    )}
+    ${renderVatFiltersToolbar()}
+    ${
+      missing.length
+        ? `<div class="auth-message">Užpildykite prieš eksportą: ${missing.map(escapeHtml).join(", ")}.</div>`
+        : `<div class="auth-message success-message">XML bus formuojamas pagal esamus PVM registrų įrašus. Prieš pateikiant VMI, rinkmeną patikrinkite i.MAS pagal galiojančią i.SAF XSD schemą.</div>`
+    }
+    <section class="document-panel">
+      <div class="detail-grid">
+        ${detailItem("Įmonė", escapeHtml(settings.companyName || "-"))}
+        ${detailItem("Įmonės kodas", escapeHtml(settings.companyCode || "-"))}
+        ${detailItem("PVM kodas", escapeHtml(settings.vatCode || "-"))}
+        ${detailItem("Laikotarpis", `${escapeHtml(state.vatFilters.from)} - ${escapeHtml(state.vatFilters.to)}`)}
+        ${detailItem("Pardavimo įrašai", String(salesEntries.length))}
+        ${detailItem("Pirkimo įrašai", String(purchaseEntries.length))}
+        ${detailItem("Suma be PVM", formatMoney(vatRegisterTotals(entries).subtotal))}
+        ${detailItem("PVM", formatMoney(vatRegisterTotals(entries).vat))}
+      </div>
+    </section>
+    <section class="table-panel">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Registras</th>
+              <th>Data</th>
+              <th>Dokumentas</th>
+              <th>Partneris</th>
+              <th class="num">Suma be PVM</th>
+              <th class="num">PVM</th>
+              <th class="num">Bendra suma</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              entries.length
+                ? entries.map((entry) => `
+                    <tr>
+                      <td>${renderVatRegisterBadge(entry.register)}</td>
+                      <td>${escapeHtml(entry.date)}</td>
+                      <td><strong>${escapeHtml(entry.number)}</strong></td>
+                      <td>${escapeHtml(entry.partyName)}</td>
+                      <td class="num">${formatMoney(entry.subtotal)}</td>
+                      <td class="num">${formatMoney(entry.vat)}</td>
+                      <td class="num">${formatMoney(entry.total)}</td>
+                    </tr>
+                  `).join("")
+                : `<tr><td colspan="7"><div class="empty-state">Pasirinktame laikotarpyje i.SAF įrašų nėra.</div></td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderAccountingSettingsPage() {
+  if (!state.accountingSchemaReady) return renderAccountingSchemaNotice("Įmonės nustatymai");
+  const settings = state.accountingSettings;
+  return `
+    ${renderHeader("Įmonės nustatymai", "Duomenys, naudojami PVM registrams ir i.SAF rinkmenai.", "", "Buhalterija")}
+    <section class="document-panel">
+      <form data-form="accounting-settings">
+        <div class="form-grid">
+          ${textField("Įmonės pavadinimas", "companyName", settings.companyName)}
+          ${textField("Įmonės kodas", "companyCode", settings.companyCode)}
+          ${textField("PVM mokėtojo kodas", "vatCode", settings.vatCode)}
+          ${textField("Adresas", "address", settings.address)}
+          ${textField("El. paštas", "email", settings.email, "email")}
+          ${textField("Telefonas", "phone", settings.phone)}
+          ${textField("Programos pavadinimas", "softwareName", settings.softwareName)}
+          ${textField("Programos versija", "softwareVersion", settings.softwareVersion)}
+        </div>
+        <div class="form-actions form-footer">
+          <button class="button" type="submit" ${state.isSaving ? "disabled" : ""}>Išsaugoti</button>
+        </div>
+      </form>
+    </section>
+  `;
+}
+
+function renderVatFiltersToolbar() {
+  return `
+    <div class="toolbar document-toolbar">
+      <div class="filter-row">
+        <label class="form-field compact-field">
+          <span class="label">Nuo</span>
+          <input class="input" type="date" data-vat-filter="from" value="${escapeHtml(state.vatFilters.from)}" />
+        </label>
+        <label class="form-field compact-field">
+          <span class="label">Iki</span>
+          <input class="input" type="date" data-vat-filter="to" value="${escapeHtml(state.vatFilters.to)}" />
+        </label>
+        <label class="form-field compact-field">
+          <span class="label">Registras</span>
+          <select class="select" data-vat-filter="register">
+            <option value="ALL" ${state.vatFilters.register === "ALL" ? "selected" : ""}>Visi</option>
+            <option value="sales" ${state.vatFilters.register === "sales" ? "selected" : ""}>Pardavimai</option>
+            <option value="purchase" ${state.vatFilters.register === "purchase" ? "selected" : ""}>Pirkimai</option>
+          </select>
+        </label>
+      </div>
+      <div class="toolbar-right muted">Pagal patvirtintus dokumentus</div>
+    </div>
+  `;
+}
+
+function renderVatRegisterRows(entries) {
+  return entries.length
+    ? entries.map((entry) => `
+        <tr>
+          <td>${renderVatRegisterBadge(entry.register)}</td>
+          <td>${escapeHtml(entry.date)}</td>
+          <td>
+            <strong>${escapeHtml(entry.number)}</strong>
+            ${entry.internalNumber && entry.internalNumber !== entry.number ? `<div class="muted small-text">Vidinis: ${escapeHtml(entry.internalNumber)}</div>` : ""}
+          </td>
+          <td>${escapeHtml(entry.partyName)}</td>
+          <td>${escapeHtml(entry.partyCode || "-")}</td>
+          <td>${escapeHtml(entry.partyVatCode || "-")}</td>
+          <td class="num">${formatMoney(entry.subtotal)}</td>
+          <td class="num">${formatMoney(entry.vat)}</td>
+          <td class="num">${formatMoney(entry.total)}</td>
+          <td>${escapeHtml(entry.sourceLabel)}</td>
+        </tr>
+      `).join("")
+    : `<tr><td colspan="10"><div class="empty-state">Pasirinktame laikotarpyje PVM registro įrašų nėra.</div></td></tr>`;
+}
+
+function renderVatRegisterBadge(register) {
+  return `<span class="badge ${register === "sales" ? "success" : "warning"}">${register === "sales" ? "Pardavimai" : "Pirkimai"}</span>`;
+}
+
 function salesTypeLabel(type) {
   return SALES_TYPES[type]?.label ?? type;
 }
 
 function salesTypePlural(type) {
   return SALES_TYPES[type]?.plural ?? type;
+}
+
+function renderNumberingPage() {
+  if (!state.salesSchemaReady) return renderSalesSchemaNotice("Numeracija");
+  const date = state.numberingDate || todayDate();
+  const month = date.slice(0, 7);
+  const receiptPrefix = `PJD-${month}-`;
+  const rows = [
+    {
+      label: "Pajamavimo dokumentas",
+      prefix: receiptPrefix,
+      nextNumber: nextDocumentNumber(date),
+      existingCount: state.documents.filter((document) => document.number.startsWith(receiptPrefix)).length,
+    },
+    ...SALES_TYPE_ORDER.map((type) => {
+      const prefix = `${SALES_TYPES[type].prefix}-${month}-`;
+      return {
+        label: salesTypeLabel(type),
+        prefix,
+        nextNumber: nextSalesDocumentNumber(type, date),
+        existingCount: state.salesDocuments.filter((document) => document.number.startsWith(prefix)).length,
+      };
+    }),
+  ];
+
+  return `
+    ${renderHeader("Numeracija", "Dokumentų numerių peržiūra pagal pasirinktą mėnesį.")}
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <label class="form-field compact-field">
+          <span class="label">Mėnuo</span>
+          <input class="input" type="month" data-numbering-date value="${escapeHtml(month)}" />
+        </label>
+      </div>
+      <div class="toolbar-right muted">Skaičiuojama pagal Supabase dokumentus</div>
+    </div>
+    <section class="table-panel">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Dokumento tipas</th>
+              <th>Prefiksas</th>
+              <th>Kitas numeris</th>
+              <th class="num">Sukurta šiame mėnesyje</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td><strong>${escapeHtml(row.label)}</strong></td>
+                <td>${escapeHtml(row.prefix)}</td>
+                <td><strong>${escapeHtml(row.nextNumber)}</strong></td>
+                <td class="num">${row.existingCount}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
 }
 
 function renderSalesStatusBadge(status) {
@@ -2440,6 +3101,125 @@ function exportSalesExcel() {
   link.download = `pardavimai-${todayDate()}.csv`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function downloadVatCsv() {
+  const entries = filteredVatEntries();
+  const rows = [
+    ["Registras", "Data", "Dokumento Nr.", "Partneris", "Kodas", "PVM kodas", "Suma be PVM", "PVM", "Bendra suma", "Šaltinis"],
+    ...entries.map((entry) => [
+      entry.register === "sales" ? "Pardavimai" : "Pirkimai",
+      entry.date,
+      entry.number,
+      entry.partyName,
+      entry.partyCode,
+      entry.partyVatCode,
+      toDecimal(entry.subtotal),
+      toDecimal(entry.vat),
+      toDecimal(entry.total),
+      entry.sourceLabel,
+    ]),
+  ];
+  const csv = rows.map((row) => row.map(csvCell).join(";")).join("\n");
+  downloadTextFile(`pvm-registrai-${state.vatFilters.from}-${state.vatFilters.to}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8");
+}
+
+function downloadIsafXml() {
+  const missing = missingIsafSettings();
+  if (missing.length) {
+    setToast(`Užpildykite: ${missing.join(", ")}.`);
+    return;
+  }
+  const xml = buildIsafXml();
+  downloadTextFile(`isaf-${state.vatFilters.from}-${state.vatFilters.to}.xml`, xml, "application/xml;charset=utf-8");
+  setToast("i.SAF XML rinkmena paruošta atsisiuntimui.");
+}
+
+function missingIsafSettings() {
+  const settings = state.accountingSettings;
+  return [
+    [settings.companyName, "įmonės pavadinimas"],
+    [settings.companyCode, "įmonės kodas"],
+    [settings.vatCode, "PVM mokėtojo kodas"],
+  ]
+    .filter(([value]) => !String(value ?? "").trim())
+    .map(([, label]) => label);
+}
+
+function buildIsafXml() {
+  const settings = state.accountingSettings;
+  const salesEntries = salesVatEntries().filter(vatEntryMatchesDate);
+  const purchaseEntries = purchaseVatEntries().filter(vatEntryMatchesDate);
+  const salesXml = salesEntries.map((entry, index) => renderIsafInvoiceXml(entry, index + 1)).join("\n");
+  const purchaseXml = purchaseEntries.map((entry, index) => renderIsafInvoiceXml(entry, index + 1)).join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<iSAFFile>
+  <Header>
+    <FileDescription>i.SAF PVM sąskaitų faktūrų registrų rinkmena</FileDescription>
+    <FileVersion>1.0</FileVersion>
+    <CompanyName>${escapeXml(settings.companyName)}</CompanyName>
+    <CompanyCode>${escapeXml(settings.companyCode)}</CompanyCode>
+    <TaxRegistrationNumber>${escapeXml(settings.vatCode)}</TaxRegistrationNumber>
+    <Address>${escapeXml(settings.address)}</Address>
+    <PeriodStart>${escapeXml(state.vatFilters.from)}</PeriodStart>
+    <PeriodEnd>${escapeXml(state.vatFilters.to)}</PeriodEnd>
+    <CurrencyCode>EUR</CurrencyCode>
+    <SoftwareName>${escapeXml(settings.softwareName)}</SoftwareName>
+    <SoftwareVersion>${escapeXml(settings.softwareVersion)}</SoftwareVersion>
+    <GeneratedAt>${escapeXml(nowIso())}</GeneratedAt>
+  </Header>
+  <SalesInvoices>
+${salesXml || "  "}
+  </SalesInvoices>
+  <PurchaseInvoices>
+${purchaseXml || "  "}
+  </PurchaseInvoices>
+</iSAFFile>
+`;
+}
+
+function renderIsafInvoiceXml(entry, index) {
+  return `    <Invoice>
+      <LineNumber>${index}</LineNumber>
+      <InvoiceNumber>${escapeXml(entry.number)}</InvoiceNumber>
+      <InvoiceDate>${escapeXml(entry.date)}</InvoiceDate>
+      <CounterpartyName>${escapeXml(entry.partyName)}</CounterpartyName>
+      <CounterpartyCode>${escapeXml(entry.partyCode || "ND")}</CounterpartyCode>
+      <CounterpartyVATCode>${escapeXml(entry.partyVatCode || "ND")}</CounterpartyVATCode>
+      <TaxableAmount>${toDecimal(entry.subtotal)}</TaxableAmount>
+      <VATAmount>${toDecimal(entry.vat)}</VATAmount>
+      <TotalAmount>${toDecimal(entry.total)}</TotalAmount>
+      <VATRate>21</VATRate>
+      <SourceDocument>${escapeXml(entry.sourceLabel)}</SourceDocument>
+    </Invoice>`;
+}
+
+function downloadTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function csvCell(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function escapeXml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function toDecimal(value) {
+  return (Number(value) || 0).toFixed(2);
 }
 
 function renderNewSalesDocumentPage() {
@@ -2980,7 +3760,7 @@ function detailItem(label, value) {
 function renderProductDatalist() {
   return `
     <datalist id="product-articles">
-      ${state.products
+      ${activeProducts()
         .map(
           (product) =>
             `<option value="${escapeHtml(product.article)}">${escapeHtml(product.name)}</option>`,
@@ -3213,6 +3993,25 @@ function bindEvents() {
     refreshProductsTable();
   });
 
+  document.querySelector("[data-numbering-date]")?.addEventListener("change", (event) => {
+    state.numberingDate = event.target.value ? `${event.target.value}-01` : todayDate();
+    render();
+  });
+
+  document.querySelectorAll("[data-vat-filter]").forEach((input) => {
+    const handler = () => {
+      state.vatFilters[input.dataset.vatFilter] = input.value;
+      render();
+    };
+    input.addEventListener("input", handler);
+    input.addEventListener("change", handler);
+  });
+
+  document.querySelector("[data-customer-debt-search]")?.addEventListener("input", (event) => {
+    state.customerDebtQuery = event.target.value;
+    render();
+  });
+
   document.querySelector("[data-stock-history-search]")?.addEventListener("input", (event) => {
     state.stockHistoryQuery = event.target.value;
     render();
@@ -3290,6 +4089,11 @@ async function handleAction(event) {
   const id = event.currentTarget.dataset.id;
 
   if (action === "add-product") openProductModal();
+  if (action === "set-product-status-filter") {
+    state.productStatusFilter = event.currentTarget.dataset.status || "active";
+    render();
+    return;
+  }
   if (action === "add-customer") openCustomerModal();
   if (action === "edit-customer") openCustomerModal(state.customers.find((item) => idsEqual(item.id, id)));
   if (action === "view-customer") {
@@ -3298,6 +4102,14 @@ async function handleAction(event) {
   }
   if (action === "sign-out") {
     await signOut();
+    return;
+  }
+  if (action === "download-vat-csv") {
+    downloadVatCsv();
+    return;
+  }
+  if (action === "download-isaf-xml") {
+    downloadIsafXml();
     return;
   }
   if (action === "edit-product") openProductModal(state.products.find((item) => idsEqual(item.id, id)));
@@ -3312,6 +4124,15 @@ async function handleAction(event) {
   if (action === "do-delete-product") {
     state.modal = null;
     await deleteProduct(id);
+    return;
+  }
+  if (action === "restore-product") {
+    requestRestoreProduct(id);
+    return;
+  }
+  if (action === "do-restore-product") {
+    state.modal = null;
+    await restoreProduct(id);
     return;
   }
   if (action === "add-supplier") openSupplierModal();
@@ -3599,6 +4420,7 @@ function openProductModal(product) {
       cost: product?.cost ?? 0,
       price: product?.price ?? 0,
       vat: product?.vat ?? 21,
+      isActive: product?.isActive ?? true,
     },
   };
 }
@@ -3728,6 +4550,18 @@ function requestDeleteProduct(id) {
   });
 }
 
+function requestRestoreProduct(id) {
+  const product = findProduct(id);
+  if (!product) return;
+  requestConfirmation({
+    title: "Grąžinti prekę",
+    message: `Ar grąžinti prekę ${product.article} · ${product.name} į aktyvų prekių sąrašą? Ji vėl bus matoma naujuose dokumentuose ir prekių paieškoje.`,
+    confirmAction: "do-restore-product",
+    confirmLabel: "Grąžinti",
+    documentId: id,
+  });
+}
+
 function requestSaveAndConfirmDeliveryNote() {
   if (!state.salesAdvancedReady) {
     setToast("Važtaraščio patvirtinimui reikia įkelti papildomą pardavimų SQL funkcijų dalį.");
@@ -3818,6 +4652,30 @@ async function handleModalSubmit(event) {
   const form = event.currentTarget;
   const formData = new FormData(form);
 
+  if (form.dataset.form === "accounting-settings") {
+    const settings = {
+      id: "main",
+      companyName: String(formData.get("companyName") ?? "").trim(),
+      companyCode: String(formData.get("companyCode") ?? "").trim(),
+      vatCode: String(formData.get("vatCode") ?? "").trim(),
+      address: String(formData.get("address") ?? "").trim(),
+      email: String(formData.get("email") ?? "").trim(),
+      phone: String(formData.get("phone") ?? "").trim(),
+      defaultCurrency: "EUR",
+      softwareName: String(formData.get("softwareName") ?? "").trim(),
+      softwareVersion: String(formData.get("softwareVersion") ?? "").trim(),
+    };
+    if (!settings.companyName || !settings.companyCode || !settings.vatCode) {
+      setToast("Užpildykite įmonės pavadinimą, įmonės kodą ir PVM kodą.");
+      return;
+    }
+    await runSaving(async () => {
+      state.accountingSettings = await database.saveAccountingSettings(settings);
+      setToast("Įmonės nustatymai išsaugoti.");
+    });
+    return;
+  }
+
   if (form.dataset.form === "product") {
     const mode = state.modal.mode;
     const product = {
@@ -3832,6 +4690,7 @@ async function handleModalSubmit(event) {
       cost: Number(formData.get("cost")) || 0,
       price: Number(formData.get("price")) || 0,
       vat: Number(formData.get("vat")) || 0,
+      isActive: state.modal.data.isActive !== false,
     };
     await runSaving(async () => {
       const savedProduct = await database.saveProduct(product);
@@ -4008,13 +4867,14 @@ function updateProductLookup(row, input) {
   row.lookupMatches = [];
   row.lookupMessage = "";
   row.productId = null;
+  const selectableProducts = activeProducts();
 
   if (!query) {
     refreshLookupPanel(row);
     return;
   }
 
-  const exact = state.products.find((product) => product.article.toLowerCase() === query);
+  const exact = selectableProducts.find((product) => product.article.toLowerCase() === query);
   if (exact) {
     applyProductToRow(row, exact);
     const currentRow = input.closest("tr");
@@ -4026,7 +4886,7 @@ function updateProductLookup(row, input) {
     return;
   }
 
-  const matches = state.products
+  const matches = selectableProducts
     .filter(
       (product) =>
         product.article.toLowerCase().includes(query) || product.name.toLowerCase().includes(query),
@@ -4046,13 +4906,14 @@ function updateSalesProductLookup(row, input) {
   row.lookupMatches = [];
   row.lookupMessage = "";
   row.productId = null;
+  const selectableProducts = activeProducts();
 
   if (!query) {
     refreshSalesLookupPanel(row);
     return;
   }
 
-  const exact = state.products.find((product) => product.article.toLowerCase() === query);
+  const exact = selectableProducts.find((product) => product.article.toLowerCase() === query);
   if (exact) {
     applyProductToSalesRow(row, exact);
     const currentRow = input.closest("tr");
@@ -4066,7 +4927,7 @@ function updateSalesProductLookup(row, input) {
     return;
   }
 
-  const matches = state.products
+  const matches = selectableProducts
     .filter(
       (product) =>
         product.article.toLowerCase().includes(query) || product.name.toLowerCase().includes(query),
@@ -4103,7 +4964,7 @@ function applyProductToSalesRow(row, product) {
 
 function selectProductForRow(rowId, productId) {
   const row = state.newDoc.rows.find((item) => item.rowId === rowId);
-  const product = state.products.find((item) => idsEqual(item.id, productId));
+  const product = activeProducts().find((item) => idsEqual(item.id, productId));
   if (!row || !product) return;
   applyProductToRow(row, product);
   const rowElement = document.querySelector(`[data-row-id="${rowId}"]`);
@@ -4118,7 +4979,7 @@ function selectProductForRow(rowId, productId) {
 
 function selectSalesProductForRow(rowId, productId) {
   const row = state.salesDraft.rows.find((item) => item.rowId === rowId);
-  const product = state.products.find((item) => idsEqual(item.id, productId));
+  const product = activeProducts().find((item) => idsEqual(item.id, productId));
   if (!row || !product) return;
   applyProductToSalesRow(row, product);
   const rowElement = document.querySelector(`[data-sales-row-id="${rowId}"]`);
@@ -4159,10 +5020,11 @@ function refreshSalesLookupPanel(row) {
 
 function refreshProductsTable() {
   const products = filteredProducts();
+  const visiblePool = productsForCurrentStatus();
   const body = document.querySelector("[data-products-body]");
   const count = document.querySelector("[data-products-count]");
   if (body) body.innerHTML = renderProductsRows(products);
-  if (count) count.textContent = `${products.length} iš ${state.products.length}`;
+  if (count) count.textContent = `${products.length} iš ${visiblePool.length}`;
   document.querySelectorAll("[data-products-body] button[data-action]").forEach((element) => {
     element.addEventListener("click", handleAction);
   });
@@ -4641,6 +5503,19 @@ async function deleteProduct(id) {
     state.selectedProductId = null;
     await reloadAllData();
     setToast("Prekė pašalinta iš aktyvaus sąrašo.");
+  });
+}
+
+async function restoreProduct(id) {
+  const product = findProduct(id);
+  if (!product) return;
+  await runSaving(async () => {
+    await database.restoreProduct(id);
+    state.page = "products";
+    state.selectedProductId = null;
+    state.productStatusFilter = "active";
+    await reloadAllData();
+    setToast("Prekė grąžinta į aktyvų sąrašą.");
   });
 }
 
