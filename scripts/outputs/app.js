@@ -1538,11 +1538,12 @@ function render() {
 function renderSidebar() {
   const showNavigation = database.isConfigured && state.currentUser;
   const items = [
-    { page: "work-center", label: "Darbo centras", icon: "◆" },
-    { page: "products", label: "Prekės", icon: "□" },
+    { page: "work-center", label: "Darbo centras", icon: "⌂" },
+    { page: "products", label: "Prekės", icon: "▦" },
     { page: "customers", label: "Klientai", icon: "◎" },
     { page: "customer-debts", label: "Klientų skolos", icon: "€" },
-    { page: "documents", label: "Pajamavimo dokumentai", icon: "≡" },
+    { page: "documents", label: "Pirkimai", icon: "≡" },
+    { page: "price-import", label: "Kainininkai", icon: "€" },
   ];
 
   return `
@@ -1551,7 +1552,7 @@ function renderSidebar() {
         <div class="brand-mark">IV</div>
         <div>
           <p class="brand-title">Inventoriaus valdymas</p>
-          <p class="brand-subtitle">Vonios įrangos prekyba</p>
+          <p class="brand-subtitle">Sandėlis ir pardavimai</p>
         </div>
       </div>
       ${
@@ -1568,12 +1569,12 @@ function renderSidebar() {
                   `,
                 )
                 .join("")}
-              <details class="nav-section" ${["suppliers", "stock-history", "new-document", "price-import"].includes(state.page) ? "open" : ""}>
+              <details class="nav-section" ${["suppliers", "stock-history", "new-document"].includes(state.page) ? "open" : ""}>
                 <summary>Kita</summary>
                 <div class="nav-sub">
                   <button class="nav-button sub-button ${state.page === "new-document" ? "active" : ""}" data-page="new-document">
                     <span class="nav-icon">+</span>
-                    <span>Naujas pajamavimas</span>
+                    <span>Naujas pirkimas</span>
                   </button>
                   <button class="nav-button sub-button ${state.page === "suppliers" ? "active" : ""}" data-page="suppliers">
                     <span class="nav-icon">◇</span>
@@ -1582,10 +1583,6 @@ function renderSidebar() {
                   <button class="nav-button sub-button ${state.page === "stock-history" ? "active" : ""}" data-page="stock-history">
                     <span class="nav-icon">↕</span>
                     <span>Likučių istorija</span>
-                  </button>
-                  <button class="nav-button sub-button ${state.page === "price-import" ? "active" : ""}" data-page="price-import">
-                    <span class="nav-icon">€</span>
-                    <span>Kainininkai</span>
                   </button>
                 </div>
               </details>
@@ -2241,7 +2238,7 @@ function renderProductsPage() {
     </div>
     <section class="table-panel">
       <div class="table-scroll">
-        <table>
+        <table class="products-table">
           <thead>
             <tr>
               <th>Artikulas</th>
@@ -2288,7 +2285,11 @@ function renderPriceImportPage() {
         <div class="price-import-inputs">
           <label class="form-field">
             <span class="label">Gamintojo kainininko failas</span>
-            <input class="input file-input" data-price-import-file type="file" accept=".xlsx,.xls,.xlsm,.ods,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values,text/plain" />
+            <span class="file-upload-control">
+              <span class="file-upload-button">Pasirinkti failą</span>
+              <span class="file-upload-text">Excel, CSV arba TXT kainininkas</span>
+              <input class="file-input" data-price-import-file type="file" accept=".xlsx,.xls,.xlsm,.ods,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values,text/plain" />
+            </span>
           </label>
           <label class="form-field">
             <span class="label">Arba įklijuokite lentelę</span>
@@ -3006,7 +3007,7 @@ function renderProductsRows(products) {
               <td class="actions-cell">
                 <div class="action-group">
                   <button class="link-button" data-action="view-product" data-id="${product.id}">Peržiūrėti</button>
-                  <button class="link-button" data-action="edit-product" data-id="${product.id}">✎ Redaguoti</button>
+                  <button class="link-button" data-action="edit-product" data-id="${product.id}">Redaguoti</button>
                   ${
                     product.isActive === false
                       ? `<button class="link-button" data-action="restore-product" data-id="${product.id}">Grąžinti</button>`
