@@ -1817,8 +1817,8 @@ function renderDatabaseSetupPage() {
         <p>Šis projektas yra Vite SPA. Atidarykite <strong>.env.local</strong> ir įrašykite Supabase Project URL bei publishable key.</p>
         <div class="setup-steps">
           <p><strong>1.</strong> Supabase projekte atidarykite SQL Editor.</p>
-          <p><strong>2.</strong> Paleiskite failą <strong>outputs/supabase-schema.sql</strong>.</p>
-          <p><strong>3.</strong> Development režime paleiskite <strong>outputs/supabase-seed.sql</strong>, jeigu norite testinių duomenų.</p>
+          <p><strong>2.</strong> Paleiskite failą <strong>scripts/outputs/supabase-schema.sql</strong>.</p>
+          <p><strong>3.</strong> Development režime paleiskite <strong>scripts/outputs/supabase-seed.sql</strong>, jeigu norite testinių duomenų.</p>
           <p><strong>4.</strong> Paleiskite <strong>npm run dev</strong>. Duomenys bus kraunami iš Supabase.</p>
         </div>
       </div>
@@ -3749,7 +3749,7 @@ function renderSalesSchemaNotice(title = "Pardavimai") {
     <section class="document-panel">
       <div class="setup-block">
         <h2>Reikia paleisti pardavimų SQL migraciją</h2>
-        <p>Pagrindinė sandėlio sistema veikia toliau. Kad pradėtų veikti klientai, pardavimų dokumentai, rezervacijos ir mokėjimai, Supabase SQL Editor lange paleiskite failą <strong>outputs/supabase-sales-module.sql</strong>.</p>
+        <p>Pagrindinė sandėlio sistema veikia toliau. Kad pradėtų veikti klientai, pardavimų dokumentai, rezervacijos ir mokėjimai, Supabase SQL Editor lange paleiskite failą <strong>scripts/outputs/supabase-sales-module.sql</strong>.</p>
       </div>
     </section>
   `;
@@ -3761,7 +3761,7 @@ function renderAccountingSchemaNotice(title = "Buhalterija") {
     <section class="document-panel">
       <div class="setup-block">
         <h2>Reikia paleisti buhalterijos SQL migraciją</h2>
-        <p>Supabase SQL Editor lange paleiskite failą <strong>outputs/supabase-accounting-module.sql</strong>. Po to perkraukite šį puslapį.</p>
+        <p>Supabase SQL Editor lange paleiskite failą <strong>scripts/outputs/supabase-accounting-module.sql</strong>. Po to perkraukite šį puslapį.</p>
       </div>
     </section>
   `;

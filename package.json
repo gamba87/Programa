@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite outputs --host 127.0.0.1 --port 4173",
-    "build": "vite build outputs --outDir ../dist",
+    "dev": "vite scripts/outputs --host 127.0.0.1 --port 4173",
+    "build": "vite build scripts/outputs --outDir ../../dist",
     "lint": "node scripts/lint.mjs"
   },
   "dependencies": {
