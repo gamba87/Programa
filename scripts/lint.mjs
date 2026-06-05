@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 
 const files = [
   "scripts/outputs/app.js",
+  "scripts/outputs/smart-assistant-addon.js",
   "scripts/outputs/supabase-client.js",
   "scripts/outputs/supabase-env.js",
 ];
