@@ -18,6 +18,64 @@ function addonClickAction(action) {
   document.querySelector(`[data-action="${action}"]:not(:disabled)`)?.click();
 }
 
+function addonStableHash(value) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return String(hash);
+}
+
+function flattenQuotedPriceImportRows(value) {
+  let fixed = "";
+  let quoted = false;
+  let changed = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const next = value[index + 1];
+
+    if (char === '"' && quoted && next === '"') {
+      fixed += '""';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = !quoted;
+      fixed += char;
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && quoted) {
+      fixed += " ";
+      changed = true;
+      if (char === "\r" && next === "\n") index += 1;
+      continue;
+    }
+
+    fixed += char;
+  }
+
+  return changed ? fixed : value;
+}
+
+function fixMultilinePriceImportHeader() {
+  if (addonPageTitle() !== "Kainininkai") return;
+  const textarea = document.querySelector("[data-price-import-text]");
+  if (!textarea?.value) return;
+
+  const fixed = flattenQuotedPriceImportRows(textarea.value);
+  if (fixed === textarea.value) return;
+
+  const hash = addonStableHash(textarea.value);
+  if (textarea.dataset.smartMultilineFixed === hash) return;
+  textarea.dataset.smartMultilineFixed = hash;
+  textarea.value = fixed;
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  window.requestAnimationFrame(() => addonClickAction("parse-price-import"));
+}
+
 function addonStorage() {
   try {
     return window.localStorage;
@@ -206,6 +264,7 @@ function enhancePriceMappingMemory() {
 }
 
 function enhanceProductivity() {
+  fixMultilinePriceImportHeader();
   enhanceProductsAutopilot();
   enhancePriceMappingMemory();
 }
