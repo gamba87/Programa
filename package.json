@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite scripts/outputs --host 127.0.0.1 --port 4173",
-    "build": "vite build scripts/outputs --outDir ../../dist",
+    "build": "vite build scripts/outputs --outDir ../../dist --emptyOutDir",
     "lint": "node scripts/lint.mjs"
   },
   "dependencies": {
