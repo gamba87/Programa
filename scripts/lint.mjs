@@ -5,6 +5,8 @@ const files = [
   "scripts/outputs/app.js",
   "scripts/outputs/smart-assistant-addon.js",
   "scripts/outputs/smart-productivity-addon.js",
+  "scripts/outputs/price-import-guard-addon.js",
+  "scripts/outputs/price-import-full-addon.js",
   "scripts/outputs/supabase-client.js",
   "scripts/outputs/supabase-env.js",
 ];
