@@ -76,6 +76,246 @@ function fixMultilinePriceImportHeader() {
   window.requestAnimationFrame(() => addonClickAction("parse-price-import"));
 }
 
+function normalizeImportLabel(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function parseSmartDelimitedLine(line, delimiter) {
+  const cells = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === delimiter && !quoted) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function detectSmartDelimiter(lines) {
+  return [";", "\t", ",", "|"]
+    .map((delimiter) => ({
+      delimiter,
+      columns: Math.max(...lines.slice(0, 20).map((line) => parseSmartDelimitedLine(line, delimiter).length)),
+    }))
+    .sort((left, right) => right.columns - left.columns)[0].delimiter;
+}
+
+function priceImportParsedTable() {
+  const textarea = document.querySelector("[data-price-import-text]");
+  const text = flattenQuotedPriceImportRows(textarea?.value || "").replace(/^\uFEFF/, "").trim();
+  if (!text) return { headers: [], rows: [] };
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const delimiter = detectSmartDelimiter(lines);
+  const parsed = lines.map((line) => parseSmartDelimitedLine(line, delimiter));
+  const selectHeaders = Array.from(document.querySelector("[data-price-import-column]")?.options || [])
+    .slice(1)
+    .map((option) => addonText(option).replace(/^\d+\.\s*/, "").replace(/\s+-\s+pvz\..*$/, ""));
+  const wanted = selectHeaders.slice(0, 4).map(normalizeImportLabel).filter(Boolean);
+  let headerIndex = parsed.findIndex((cells) => {
+    const normalized = cells.map(normalizeImportLabel);
+    return wanted.length >= 2 && wanted.filter((header) => normalized.includes(header)).length >= 2;
+  });
+  if (headerIndex < 0) headerIndex = parsed.findIndex((cells) => cells.length >= Math.max(2, selectHeaders.length));
+  return {
+    headers: headerIndex >= 0 ? parsed[headerIndex] : [],
+    rows: headerIndex >= 0 ? parsed.slice(headerIndex + 1).filter((cells) => cells.some(Boolean)) : [],
+  };
+}
+
+function priceImportSampleFor(index) {
+  if (index < 0) return "";
+  const table = priceImportParsedTable();
+  const row = table.rows.find((cells) => cells[index]);
+  return row?.[index] || "";
+}
+
+function selectedOptionText(field) {
+  const select = document.querySelector(`[data-price-import-column="${field}"]`);
+  return addonText(select?.selectedOptions?.[0]);
+}
+
+function setPriceImportColumn(field, option) {
+  const select = document.querySelector(`[data-price-import-column="${field}"]`);
+  if (!select || !option || select.value === option.value) return false;
+  select.value = option.value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function setPriceImportOption(optionName, checked) {
+  const input = document.querySelector(`[data-price-import-option="${optionName}"]`);
+  if (!input || input.checked === checked) return false;
+  input.checked = checked;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function optionLooksLikeWithoutVat(option) {
+  const text = normalizeImportLabel(addonText(option));
+  return text.includes("be pvm") || text.includes("without vat") || text.includes("excl vat") || text.includes("net retail");
+}
+
+function optionLooksLikeWithVat(option) {
+  const text = normalizeImportLabel(addonText(option));
+  return text.includes("su pvm") || text.includes("with vat") || text.includes("gross");
+}
+
+function optionLooksLikeRetail(option) {
+  const text = normalizeImportLabel(addonText(option));
+  return text.includes("mazmen") || text.includes("retail") || text.includes("rrp");
+}
+
+function enhancePriceImportRawText() {
+  const textarea = document.querySelector("[data-price-import-text]");
+  const field = textarea?.closest(".form-field");
+  if (!textarea || !field || field.closest("[data-smart-raw-import]")) return;
+  const details = document.createElement("details");
+  details.dataset.smartRawImport = "true";
+  details.open = !textarea.value.trim();
+  details.style.border = "1px solid var(--line)";
+  details.style.borderRadius = "8px";
+  details.style.padding = "12px 14px";
+  details.style.background = "#fff";
+  const summary = document.createElement("summary");
+  summary.textContent = textarea.value.trim() ? "Rodyti nuskaitytą tekstą" : "Įklijuoti lentelę rankiniu būdu";
+  summary.style.cursor = "pointer";
+  summary.style.fontWeight = "800";
+  summary.style.color = "var(--accent-dark)";
+  field.replaceWith(details);
+  details.append(summary, field);
+}
+
+function enhancePriceImportOptionLabels() {
+  const table = priceImportParsedTable();
+  const signature = `${priceHeadersSignature()}|${table.rows[0]?.join("|") || ""}`;
+  document.querySelectorAll("[data-price-import-column]").forEach((select) => {
+    if (select.dataset.smartOptionSamples === signature) return;
+    Array.from(select.options).forEach((option) => {
+      if (option.value === "-1" || option.dataset.smartLabelBase) return;
+      option.dataset.smartLabelBase = addonText(option);
+      const sample = priceImportSampleFor(Number(option.value));
+      const badges = [];
+      if (optionLooksLikeWithoutVat(option)) badges.push("be PVM");
+      if (optionLooksLikeWithVat(option)) badges.push("su PVM");
+      if (normalizeImportLabel(option.textContent).includes("gtin") || normalizeImportLabel(option.textContent).includes("ean")) badges.push("GTIN/EAN");
+      option.textContent = `${option.dataset.smartLabelBase}${badges.length ? ` (${badges.join(", ")})` : ""}${sample ? ` - pvz. ${sample}` : ""}`;
+    });
+    select.dataset.smartOptionSamples = signature;
+  });
+}
+
+function autoFixPriceImportMapping() {
+  const priceSelect = document.querySelector('[data-price-import-column="price"]');
+  if (!priceSelect) return;
+  const withoutVat = Array.from(priceSelect.options).find(optionLooksLikeWithoutVat);
+  const currentPrice = priceSelect.selectedOptions?.[0];
+  if (withoutVat && currentPrice && !optionLooksLikeWithoutVat(currentPrice)) {
+    const currentText = normalizeImportLabel(addonText(currentPrice));
+    if (currentText.includes("list price") || optionLooksLikeWithVat(currentPrice) || currentText === "nenaudoti") {
+      if (setPriceImportColumn("price", withoutVat)) return;
+    }
+  }
+
+  const costSelect = document.querySelector('[data-price-import-column="cost"]');
+  const currentCost = costSelect?.selectedOptions?.[0];
+  if (!costSelect || costSelect.value === "-1" || optionLooksLikeRetail(currentCost)) {
+    if (costSelect && costSelect.value !== "-1" && optionLooksLikeRetail(currentCost)) {
+      costSelect.value = "-1";
+      costSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+    setPriceImportOption("updateCost", false);
+  }
+}
+
+function priceImportSafetyIssues() {
+  const issues = [];
+  const priceSelect = document.querySelector('[data-price-import-column="price"]');
+  const priceOption = priceSelect?.selectedOptions?.[0];
+  const saferPrice = priceSelect ? Array.from(priceSelect.options).find(optionLooksLikeWithoutVat) : null;
+  if (priceOption && saferPrice && priceOption.value !== saferPrice.value && optionLooksLikeWithVat(priceOption)) {
+    issues.push(`Parinkta kaina su PVM. Pasirinkite „${addonText(saferPrice)}“.`);
+  }
+  const article = normalizeImportLabel(selectedOptionText("article"));
+  if (article.includes("gtin") || article.includes("ean") || article.includes("barcode")) {
+    issues.push("Prekės kodui parinktas GTIN/EAN. Rinkitės gamintojo kodą, pvz. Code no.");
+  }
+  return issues;
+}
+
+function renderSmartImportSummary() {
+  const mapping = document.querySelector(".price-import-mapping");
+  if (!mapping) return;
+  let panel = document.querySelector("[data-smart-import-summary]");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.className = "price-import-coach";
+    panel.dataset.smartImportSummary = "true";
+    mapping.insertAdjacentElement("beforebegin", panel);
+  }
+  const priceSample = priceImportSampleFor(Number(document.querySelector('[data-price-import-column="price"]')?.value));
+  const articleSample = priceImportSampleFor(Number(document.querySelector('[data-price-import-column="article"]')?.value));
+  const costText = selectedOptionText("cost") || "Nenaudoti";
+  const issues = priceImportSafetyIssues();
+  panel.innerHTML = `
+    <div class="section-heading compact-heading">
+      <h2>Patikra prieš atnaujinimą</h2>
+      <span>${issues.length ? "!" : "OK"}</span>
+    </div>
+    <div class="price-import-coach-list">
+      <div class="price-import-coach-tip ${issues.length ? "danger" : "success"}">
+        <strong>${issues.length ? "Reikia pataisyti priskyrimą" : "Galima tęsti saugiai"}</strong>
+        <span>${issues[0] || `Kodas: ${articleSample || "-"} · kaina be PVM: ${priceSample || "-"} · savikaina: ${costText}`}</span>
+      </div>
+      <div class="price-import-coach-tip info">
+        <strong>Paprasta taisyklė</strong>
+        <span>Gamintojo kainininkui dažniausiai reikia tik prekės kodo, pavadinimo, gamintojo ir pardavimo kainos be PVM. Savikainą palikite nenaudoti, jei tai nėra jūsų pirkimo kaina.</span>
+      </div>
+    </div>
+  `;
+}
+
+function guardPriceImportApply() {
+  const button = document.querySelector('[data-action="apply-price-import"]');
+  if (!button) return;
+  const issues = priceImportSafetyIssues();
+  if (issues.length) {
+    button.disabled = true;
+    button.title = issues[0];
+  }
+}
+
+function enhancePriceImportUsability() {
+  if (addonPageTitle() !== "Kainininkai") return;
+  if (!document.querySelector(".price-import-mapping")) return;
+  enhancePriceImportRawText();
+  enhancePriceImportOptionLabels();
+  autoFixPriceImportMapping();
+  renderSmartImportSummary();
+  guardPriceImportApply();
+}
+
 function addonStorage() {
   try {
     return window.localStorage;
@@ -266,6 +506,7 @@ function enhancePriceMappingMemory() {
 function enhanceProductivity() {
   fixMultilinePriceImportHeader();
   enhanceProductsAutopilot();
+  enhancePriceImportUsability();
   enhancePriceMappingMemory();
 }
 
