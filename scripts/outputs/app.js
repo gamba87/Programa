@@ -42,6 +42,25 @@ const CONVERSION_TARGETS = {
   INVOICE: ["DELIVERY_NOTE"],
   DELIVERY_NOTE: [],
 };
+const ACCOUNTING_ACCOUNTS = [
+  { code: "2010", name: "Prekių atsargos", type: "Turtas" },
+  { code: "2410", name: "Pirkėjų skolos", type: "Turtas" },
+  { code: "2431", name: "Gautinas PVM", type: "Turtas" },
+  { code: "2710", name: "Banko sąskaita", type: "Turtas" },
+  { code: "2720", name: "Kasa", type: "Turtas" },
+  { code: "4430", name: "Skolos tiekėjams", type: "Įsipareigojimai" },
+  { code: "4484", name: "Mokėtinas PVM", type: "Įsipareigojimai" },
+  { code: "5000", name: "Pardavimo pajamos", type: "Pajamos" },
+  { code: "6000", name: "Parduotų prekių savikaina", type: "Sąnaudos" },
+];
+const ACCOUNTING_SOURCE_TYPES = {
+  ALL: "Visi šaltiniai",
+  purchase: "Pirkimai",
+  sales: "Pardavimai",
+  payment: "Mokėjimai",
+  delivery: "Savikaina",
+};
+const ISAF_MONTHLY_DEADLINE_DAY = 20;
 const database = createSupabaseDatabase(supabase, isSupabaseConfigured);
 
 const sampleSuppliers = [
@@ -261,7 +280,13 @@ let activeState = null;
 function blankPriceImport() {
   return {
     text: "",
+    sourceName: "",
+    sourceType: "",
+    sourceMeta: "",
+    sheetName: "",
+    sheetNames: [],
     headers: [],
+    hasHeader: false,
     columns: {
       article: -1,
       name: -1,
@@ -322,6 +347,12 @@ const state = {
     from: monthStartDate(),
     to: todayDate(),
     register: "ALL",
+  },
+  accountingFilters: {
+    from: monthStartDate(),
+    to: todayDate(),
+    account: "ALL",
+    source: "ALL",
   },
   salesTab: "OFFER",
   salesQuery: "",
@@ -1525,6 +1556,8 @@ function render() {
   app.innerHTML = `
     ${renderSidebar()}
     <main class="content">
+      ${renderTopBar()}
+      ${renderQuickAccessBar()}
       ${state.errorMessage ? `<div class="toast error-toast">${escapeHtml(state.errorMessage)}</div>` : ""}
       ${renderPage()}
     </main>
@@ -1549,16 +1582,15 @@ function renderSidebar() {
   return `
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">IV</div>
+        <div class="brand-mark">MA</div>
         <div>
-          <p class="brand-title">Inventoriaus valdymas</p>
-          <p class="brand-subtitle">Sandėlis ir pardavimai</p>
+          <p class="brand-title">mano apskaita</p>
+          <p class="brand-subtitle">Sandėlis, pardavimai ir PVM</p>
         </div>
       </div>
       ${
         showNavigation
-          ? `${renderGlobalSearch()}
-            <nav class="nav" aria-label="Pagrindinė navigacija">
+          ? `<nav class="nav" aria-label="Pagrindinė navigacija">
               ${items
                 .map(
                   (item) => `
@@ -1607,9 +1639,21 @@ function renderSidebar() {
                   </button>
                 </div>
               </details>
-              <details class="nav-section" ${["vat-registers", "isaf-export", "accounting-settings"].includes(state.page) ? "open" : ""}>
+              <details class="nav-section" ${["accounting-dashboard", "general-ledger", "trial-balance", "vat-registers", "isaf-export", "accounting-settings"].includes(state.page) ? "open" : ""}>
                 <summary>Buhalterija</summary>
                 <div class="nav-sub">
+                  <button class="nav-button sub-button ${state.page === "accounting-dashboard" ? "active" : ""}" data-page="accounting-dashboard">
+                    <span class="nav-icon">∑</span>
+                    <span>Suvestinė</span>
+                  </button>
+                  <button class="nav-button sub-button ${state.page === "general-ledger" ? "active" : ""}" data-page="general-ledger">
+                    <span class="nav-icon">DK</span>
+                    <span>Didžioji knyga</span>
+                  </button>
+                  <button class="nav-button sub-button ${state.page === "trial-balance" ? "active" : ""}" data-page="trial-balance">
+                    <span class="nav-icon">=</span>
+                    <span>Bandomasis balansas</span>
+                  </button>
                   <button class="nav-button sub-button ${state.page === "vat-registers" ? "active" : ""}" data-page="vat-registers">
                     <span class="nav-icon">%</span>
                     <span>PVM registrai</span>
@@ -1641,6 +1685,74 @@ function renderSidebar() {
   `;
 }
 
+function renderTopBar() {
+  if (!database.isConfigured || !state.currentUser || state.isLoading) return "";
+  const email = state.currentUser.email || "vartotojas";
+  const label = email.split("@")[0] || email;
+  const initials = label
+    .split(/[.\s_-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "MP";
+
+  return `
+    <section class="top-bar" aria-label="Programos juosta">
+      <button class="top-menu-button" type="button" data-page="work-center" aria-label="Darbo centras">
+        <span class="nav-icon">☰</span>
+      </button>
+      <div class="top-search">
+        ${renderGlobalSearch("Ieškoti dokumentų, klientų, prekių...")}
+      </div>
+      <div class="top-actions">
+        <button class="button top-new-button" data-action="quick-new-receipt">
+          <span class="button-icon">+</span>
+          <span>Naujas</span>
+        </button>
+        <button class="top-icon-button" data-action="go-customer-debts" aria-label="Klientų skolos">!</button>
+        <button class="top-icon-button" data-page="accounting-settings" aria-label="Nustatymai">⚙</button>
+        <div class="top-user">
+          <span class="top-avatar">${escapeHtml(initials)}</span>
+          <span class="top-user-text">
+            <strong>${escapeHtml(label)}</strong>
+            <em>UAB Demo įmonė</em>
+          </span>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderQuickAccessBar() {
+  if (!database.isConfigured || !state.currentUser || state.isLoading) return "";
+  const actions = [
+    { action: "quick-new-receipt", title: "Pradėti pajamavimą", meta: "Pirkimo prekės", icon: "▣", tone: "mint" },
+    { action: "quick-new-invoice", title: "Naujas pardavimas", meta: "Sąskaita klientui", icon: "+", tone: "blue" },
+    { page: "price-import", title: "Įkelti kainininką", meta: "Excel importas", icon: "↥", tone: "amber" },
+    { action: "go-customer-debts", title: "Sutvarkyti skolas", meta: "Neapmokėti dokumentai", icon: "€", tone: "rose" },
+  ];
+
+  return `
+    <section class="quick-access-strip" aria-label="Greiti veiksmai">
+      ${actions.map(renderQuickAccessButton).join("")}
+    </section>
+  `;
+}
+
+function renderQuickAccessButton(item) {
+  const attribute = item.page ? `data-page="${item.page}"` : `data-action="${item.action}"`;
+  return `
+    <button class="quick-access-card ${item.tone}" ${attribute}>
+      <span class="quick-access-icon">${escapeHtml(item.icon)}</span>
+      <span class="quick-access-copy">
+        <strong>${escapeHtml(item.title)}</strong>
+        <em>${escapeHtml(item.meta)}</em>
+      </span>
+      <span class="quick-access-arrow">›</span>
+    </button>
+  `;
+}
+
 function sidebarItemActive(page) {
   if (state.page === "document-detail" && page === "documents") return true;
   if (state.page === "product-detail" && page === "products") return true;
@@ -1649,14 +1761,14 @@ function sidebarItemActive(page) {
   return state.page === page;
 }
 
-function renderGlobalSearch() {
+function renderGlobalSearch(placeholder = "Ieškoti visur") {
   const results = globalSearchResults();
   const hasQuery = state.globalSearchQuery.trim().length >= 2;
   return `
     <div class="global-search">
       <label class="global-search-box">
         <span>⌕</span>
-        <input data-global-search value="${escapeHtml(state.globalSearchQuery)}" placeholder="Ieškoti visur" />
+        <input data-global-search value="${escapeHtml(state.globalSearchQuery)}" placeholder="${escapeHtml(placeholder)}" />
       </label>
       ${
         hasQuery
@@ -1768,6 +1880,9 @@ function renderPage() {
   if (state.page === "new-sales-document") return renderNewSalesDocumentPage();
   if (state.page === "sales-document-detail") return renderSalesDocumentDetailPage();
   if (state.page === "numbering") return renderNumberingPage();
+  if (state.page === "accounting-dashboard") return renderAccountingDashboardPage();
+  if (state.page === "general-ledger") return renderGeneralLedgerPage();
+  if (state.page === "trial-balance") return renderTrialBalancePage();
   if (state.page === "vat-registers") return renderVatRegistersPage();
   if (state.page === "isaf-export") return renderIsafExportPage();
   if (state.page === "accounting-settings") return renderAccountingSettingsPage();
@@ -2271,33 +2386,52 @@ function renderPriceImportPage() {
     ${renderHeader(
       "Kainininkai",
       "Įkelkite gamintojo Excel, CSV arba TXT kainininką su prekių kodais ir atnaujinkite kainas per peržiūrą.",
-      `<button class="button secondary" data-action="download-price-template">Atsisiųsti šabloną</button>`,
+      `<div class="form-actions">
+        <button class="button secondary" data-action="clear-price-import">Atšaukti</button>
+        <button class="button" data-action="parse-price-import">Nuskaityti failą</button>
+      </div>`,
       "Prekės",
     )}
-    <section class="summary-grid price-import-summary" aria-label="Kainininko santrauka">
-      ${metricCard("Eilučių", String(summary.total))}
-      ${metricCard("Atnaujins", String(summary.update))}
-      ${metricCard("Sukurs", String(summary.create))}
-      ${metricCard("Praleis", String(summary.skip))}
-    </section>
     <section class="document-panel price-import-panel">
       <div class="price-import-layout">
         <div class="price-import-inputs">
+          <div class="price-import-step-heading">
+            <span>1.</span>
+            <div>
+              <h2>Įkelkite kainininko failą</h2>
+              <p>Excel lapas, CSV arba nukopijuota lentelė su artikulais.</p>
+            </div>
+          </div>
           <label class="form-field">
             <span class="label">Gamintojo kainininko failas</span>
             <span class="file-upload-control">
               <span class="file-upload-button">Pasirinkti failą</span>
-              <span class="file-upload-text">Excel, CSV arba TXT kainininkas</span>
+              <span class="file-upload-text">${escapeHtml(state.priceImport.sourceName || "Excel, CSV arba TXT kainininkas")}</span>
               <input class="file-input" data-price-import-file type="file" accept=".xlsx,.xls,.xlsm,.ods,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values,text/plain" />
             </span>
           </label>
+          ${renderPriceImportSourceInfo()}
+          <section class="summary-grid price-import-summary" aria-label="Kainininko santrauka">
+            ${metricCard("Eilučių", String(summary.total))}
+            ${metricCard("Atnaujins", String(summary.update))}
+            ${metricCard("Sukurs", String(summary.create))}
+            ${metricCard("Praleis", String(summary.skip))}
+            ${metricCard("Su PVM", String(summary.grossConverted))}
+          </section>
           <label class="form-field">
             <span class="label">Arba įklijuokite lentelę</span>
             <textarea class="input textarea price-import-textarea" data-price-import-text rows="12" placeholder="Artikulas;Pavadinimas;Gamintojas;Savikaina;Pardavimo kaina;PVM">${escapeHtml(state.priceImport.text)}</textarea>
           </label>
-          ${renderPriceImportMapping()}
         </div>
         <div class="price-import-options">
+          <div class="price-import-step-heading">
+            <span>2.</span>
+            <div>
+              <h2>Stulpelių priskyrimas</h2>
+              <p>Priskirkite failo stulpelius sistemos laukams.</p>
+            </div>
+          </div>
+          ${renderPriceImportMapping()}
           <h2>Ką atnaujinti</h2>
           ${priceImportOption("updateCost", "Savikainą")}
           ${priceImportOption("updatePrice", "Pardavimo kainą")}
@@ -2308,12 +2442,12 @@ function renderPriceImportPage() {
           <div class="auth-message import-note">
             Sistema priima Excel, CSV ir nukopijuotą lentelę. Atpažįstami dažni stulpeliai: artikulas, kodas, SKU, pavadinimas, gamintojas, savikaina, pardavimo kaina, price, VAT.
           </div>
+          <button class="button secondary" data-action="download-price-template">Atsisiųsti šabloną</button>
         </div>
       </div>
       <div class="form-actions price-import-actions">
         <button class="button secondary" data-action="clear-price-import">Išvalyti</button>
-        <button class="button secondary" data-action="parse-price-import">Nuskaityti</button>
-        <button class="button" data-action="apply-price-import" ${canApply ? "" : "disabled"}>Atnaujinti prekes</button>
+        <button class="button" data-action="apply-price-import" ${canApply ? "" : "disabled"}>Atnaujinti kainas</button>
       </div>
       ${renderPriceImportErrors()}
     </section>
@@ -2322,6 +2456,7 @@ function renderPriceImportPage() {
         <table>
           <thead>
             <tr>
+              <th>Eil.</th>
               <th>Būsena</th>
               <th>Artikulas</th>
               <th>Pavadinimas</th>
@@ -2342,12 +2477,20 @@ function renderPriceImportPage() {
 }
 
 function renderPriceImportMapping() {
-  if (!state.priceImport.headers.length) return "";
+  if (!state.priceImport.headers.length) {
+    return `
+      <div class="price-import-mapping empty-mapping">
+        <div class="import-note mapping-note">
+          Įkelkite arba įklijuokite kainininką, tada čia matysite automatiškai atpažintus stulpelius.
+        </div>
+      </div>
+    `;
+  }
   return `
     <div class="price-import-mapping">
       <div>
-        <h2>Stulpelių priskyrimas</h2>
-        <p class="muted small-text">Jeigu gamintojo kainininkas kitoks, čia pataisykite, kuris stulpelis kur turi keliauti. GTIN / EAN čia paprastai nereikia rinktis.</p>
+        <h2>Sistemos laukai</h2>
+        <p class="muted small-text">Jeigu gamintojo kainininkas kitoks, čia pataisykite, kuris stulpelis kur turi keliauti. GTIN / EAN čia paprastai nereikia rinktis. Kainos stulpeliai su PVM peržiūroje perskaičiuojami į kainą be PVM.</p>
       </div>
       <div class="mapping-grid">
         ${priceImportColumnSelect("article", "Artikulas / prekės kodas", true)}
@@ -2359,6 +2502,18 @@ function renderPriceImportMapping() {
       </div>
     </div>
   `;
+}
+
+function renderPriceImportSourceInfo() {
+  const details = [];
+  if (state.priceImport.sourceName) details.push(state.priceImport.sourceName);
+  if (state.priceImport.sheetName) details.push(`lapas: ${state.priceImport.sheetName}`);
+  if (state.priceImport.sheetNames.length > 1) details.push(`${state.priceImport.sheetNames.length} lapai`);
+  if (state.priceImport.sourceMeta) details.push(state.priceImport.sourceMeta);
+  if (state.priceImport.headers.length) details.push(`${state.priceImport.headers.length} stulp.`);
+  if (state.priceImport.hasHeader && state.priceImport.headerLineIndex >= 0) details.push(`antraštė ${state.priceImport.headerLineIndex + 1} eil.`);
+  if (!details.length) return "";
+  return `<div class="price-import-source">${details.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`;
 }
 
 function priceImportColumnSelect(field, label, required = false) {
@@ -2396,7 +2551,7 @@ function renderPriceImportErrors() {
 function renderPriceImportRows() {
   const rows = state.priceImport.rows;
   if (!rows.length) {
-    return `<tr><td colspan="8"><div class="empty-state">Įkelkite kainininką ir paspauskite „Nuskaityti“. Čia matysite, kurios prekės bus atnaujintos.</div></td></tr>`;
+    return `<tr><td colspan="9"><div class="empty-state">Įkelkite kainininką ir paspauskite „Nuskaityti“. Čia matysite, kurios prekės bus atnaujintos.</div></td></tr>`;
   }
 
   const previewRows = rows.slice(0, 150);
@@ -2406,6 +2561,7 @@ function renderPriceImportRows() {
       .map(
         (row) => `
           <tr>
+            <td class="num muted">${row.lineNumber}</td>
             <td>${renderPriceImportStatus(row)}</td>
             <td><strong>${escapeHtml(row.article || "-")}</strong></td>
             <td>${escapeHtml(row.name || row.existingProduct?.name || "-")}</td>
@@ -2420,7 +2576,7 @@ function renderPriceImportRows() {
       .join("")}
     ${
       hiddenCount > 0
-        ? `<tr><td colspan="8"><div class="empty-state">Rodoma pirmos 150 eilučių. Dar ${hiddenCount} eil. bus pritaikytos paspaudus atnaujinimą.</div></td></tr>`
+        ? `<tr><td colspan="9"><div class="empty-state">Rodoma pirmos 150 eilučių. Dar ${hiddenCount} eil. bus pritaikytos paspaudus atnaujinimą.</div></td></tr>`
         : ""
     }
   `;
@@ -2494,17 +2650,29 @@ function priceImportSummary() {
       if (row.status === "update") summary.update += 1;
       if (row.status === "create") summary.create += 1;
       if (row.status === "skip") summary.skip += 1;
+      if (row.priceWasGross || row.costWasGross) summary.grossConverted += 1;
       return summary;
     },
-    { total: 0, update: 0, create: 0, skip: 0 },
+    { total: 0, update: 0, create: 0, skip: 0, grossConverted: 0 },
   );
 }
 
 async function readPriceImportFile(file) {
   if (isSpreadsheetImportFile(file)) {
-    return readSpreadsheetImportFile(file);
+    return {
+      ...(await readSpreadsheetImportFile(file)),
+      sourceName: file.name,
+      sourceType: "spreadsheet",
+    };
   }
-  return file.text();
+  return {
+    text: await file.text(),
+    sourceName: file.name,
+    sourceType: "text",
+    sourceMeta: readableFileSize(file.size),
+    sheetName: "",
+    sheetNames: [],
+  };
 }
 
 function isSpreadsheetImportFile(file) {
@@ -2515,11 +2683,58 @@ function isSpreadsheetImportFile(file) {
 async function readSpreadsheetImportFile(file) {
   const xlsx = await loadSpreadsheetImportLibrary();
   const buffer = await file.arrayBuffer();
-  const workbook = xlsx.read(buffer, { type: "array", cellDates: false });
-  const sheetName = workbook.SheetNames?.[0];
-  if (!sheetName) throw new Error("Excel faile nerasta lapų.");
+  const workbook = xlsx.read(buffer, { type: "array", cellDates: false, cellText: true });
+  const sheetNames = workbook.SheetNames ?? [];
+  if (!sheetNames.length) throw new Error("Excel faile nerasta lapų.");
+
+  const candidates = sheetNames
+    .map((sheetName) => spreadsheetImportSheetCandidate(xlsx, workbook, sheetName))
+    .filter((candidate) => candidate.rows.length);
+  const best = candidates.sort((left, right) => right.score - left.score || right.rows.length - left.rows.length)[0];
+
+  if (!best) throw new Error("Excel faile nerasta kainininko lentelės.");
+  return {
+    text: spreadsheetRowsToDelimitedText(best.rows),
+    sourceMeta: `${best.rows.length} eil. · ${best.columnCount} stulp.`,
+    sheetName: best.sheetName,
+    sheetNames,
+  };
+}
+
+function spreadsheetImportSheetCandidate(xlsx, workbook, sheetName) {
   const sheet = workbook.Sheets[sheetName];
-  return xlsx.utils.sheet_to_csv(sheet, { FS: ";", RS: "\n", blankrows: false });
+  const rows = xlsx.utils
+    .sheet_to_json(sheet, { header: 1, blankrows: false, defval: "", raw: false })
+    .map((row) => row.map(cleanImportCell))
+    .filter((row) => row.some(Boolean));
+  const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  const text = spreadsheetRowsToDelimitedText(rows);
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const detected = lines.length ? detectPriceImportTable(lines) : { hasHeader: false, score: 0, headerLineIndex: -1 };
+  const dataRows = detected.hasHeader ? Math.max(0, lines.length - detected.headerLineIndex - 1) : lines.length;
+  const score =
+    (detected.score || 0) +
+    (detected.hasHeader ? 8 : 0) +
+    Math.min(dataRows, 200) / 20 +
+    Math.min(columnCount, 18) / 3;
+  return { sheetName, rows, columnCount, score };
+}
+
+function spreadsheetRowsToDelimitedText(rows) {
+  return rows.map((row) => row.map(importDelimitedCell).join(";")).join("\n");
+}
+
+function importDelimitedCell(value) {
+  const text = cleanImportCell(value);
+  if (!/[;"\n\r]/.test(text)) return text;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function readableFileSize(size) {
+  const number = Number(size) || 0;
+  if (number < 1024) return `${number} B`;
+  if (number < 1024 * 1024) return `${Math.round(number / 102.4) / 10} KB`;
+  return `${Math.round(number / 1024 / 102.4) / 10} MB`;
 }
 
 async function loadSpreadsheetImportLibrary() {
@@ -2567,7 +2782,7 @@ function parseCurrentPriceImport({ notify = false, preserveColumns = false } = {
         headerLineIndex: state.priceImport.headerLineIndex,
         headers: state.priceImport.headers,
         columns: state.priceImport.columns,
-        hasHeader: state.priceImport.headerLineIndex >= 0,
+        hasHeader: state.priceImport.hasHeader,
       }
     : detectPriceImportTable(lines);
   const columns = detected.columns;
@@ -2577,6 +2792,7 @@ function parseCurrentPriceImport({ notify = false, preserveColumns = false } = {
   state.priceImport.delimiter = detected.delimiter;
   state.priceImport.headerLineIndex = detected.headerLineIndex;
   state.priceImport.headers = detected.headers;
+  state.priceImport.hasHeader = detected.hasHeader;
   state.priceImport.columns = { ...blankPriceImport().columns, ...columns };
 
   if (!detected.hasHeader) {
@@ -2585,17 +2801,17 @@ function parseCurrentPriceImport({ notify = false, preserveColumns = false } = {
 
   if (columns.article < 0) {
     state.priceImport.rows = [];
-    state.priceImport.errors = ["Pasirinkite, kuris stulpelis yra artikulas / prekės kodas."];
+    state.priceImport.errors = [...errors, "Pasirinkite, kuris stulpelis yra artikulas / prekės kodas."];
     return;
   }
 
   const productByCode = new Map(state.products.map((product) => [normalizeArticle(product.article), product]));
   const rows = dataLines
-    .map((line, index) => parsePriceImportRow(line, detected.delimiter, state.priceImport.columns, productByCode, index + (detected.hasHeader ? detected.headerLineIndex + 2 : 1)))
+    .map((line, index) => parsePriceImportRow(line, detected.delimiter, state.priceImport.columns, detected.headers, productByCode, index + (detected.hasHeader ? detected.headerLineIndex + 2 : 1)))
     .filter(Boolean);
 
-  const duplicateArticles = findDuplicateImportArticles(rows);
-  duplicateArticles.forEach((article) => errors.push(`Kainininke kartojasi artikulas ${article}. Bus naudojama kiekviena eilutė iš eilės.`));
+  priceImportGrossColumnWarnings(detected.headers, state.priceImport.columns).forEach((warning) => errors.push(warning));
+  markDuplicateImportRows(rows).forEach((warning) => errors.push(warning));
 
   state.priceImport.rows = rows;
   state.priceImport.errors = errors;
@@ -2641,6 +2857,7 @@ function detectPriceImportTable(lines) {
     headers: firstHeaders,
     columns: { ...blankPriceImport().columns, article: -1 },
     hasHeader: false,
+    score: 0,
   };
 }
 
@@ -2710,11 +2927,24 @@ function detectPriceImportColumns(headers) {
 function priceImportPriceColumnIndex(headers) {
   const withoutVat = importColumnIndex(headers, ["mazmenine kaina be pvm", "mažmeninė kaina be pvm", "pardavimo kaina be pvm", "kaina be pvm", "price excl vat", "price without vat", "net retail price"]);
   if (withoutVat >= 0) return withoutVat;
+  const withVat = importColumnIndex(headers, ["mazmenine kaina su pvm", "mažmeninė kaina su pvm", "pardavimo kaina su pvm", "kaina su pvm", "price incl vat", "price including vat", "price with vat", "gross price"]);
+  if (withVat >= 0) return withVat;
   return importColumnIndex(headers, ["pardavimo kaina", "sale price", "sale_price", "retail price", "recommended price", "rekomenduojama kaina", "rrp", "price", "mazmenine kaina", "mažmeninė kaina", "kaina"], ["savikaina", "pirkimo", "purchase", "cost", "didmenine", "didmeninė", "wholesale", "gtin", "ean", "barcode"]);
 }
 
 function priceImportVatColumnIndex(headers) {
   return importColumnIndex(headers, ["pvm tarifas", "vat rate", "vat_rate", "pvm %", "vat %", "pvm", "vat"], ["kaina", "price", "amount", "suma", "su pvm", "be pvm", "with vat", "without vat"]);
+}
+
+function priceImportGrossColumnWarnings(headers, columns) {
+  const warnings = [];
+  if (importHeaderLooksLikeGrossPrice(cellAt(headers, columns.price))) {
+    warnings.push("Pardavimo kaina pažymėta kaip su PVM, todėl peržiūroje ji perskaičiuota į kainą be PVM.");
+  }
+  if (importHeaderLooksLikeGrossPrice(cellAt(headers, columns.cost))) {
+    warnings.push("Savikaina pažymėta kaip su PVM, todėl peržiūroje ji perskaičiuota į kainą be PVM.");
+  }
+  return warnings;
 }
 
 function importColumnIndex(headers, aliases, excludedAliases = []) {
@@ -2744,9 +2974,16 @@ function importHeaderLooksLikeBarcode(header) {
   );
 }
 
-function parsePriceImportRow(line, delimiter, columns, productByCode, lineNumber) {
+function parsePriceImportRow(line, delimiter, columns, headers, productByCode, lineNumber) {
   const cells = parseDelimitedLine(line, delimiter).map(cleanImportCell);
   const article = cellAt(cells, columns.article);
+  const existingProduct = productByCode.get(normalizeArticle(article)) ?? null;
+  const vat = parseImportVat(cellAt(cells, columns.vat));
+  const vatForGross = vat ?? existingProduct?.vat ?? 21;
+  const rawCost = parseImportMoney(cellAt(cells, columns.cost));
+  const rawPrice = parseImportMoney(cellAt(cells, columns.price));
+  const costWasGross = rawCost !== null && importHeaderLooksLikeGrossPrice(cellAt(headers, columns.cost));
+  const priceWasGross = rawPrice !== null && importHeaderLooksLikeGrossPrice(cellAt(headers, columns.price));
   const row = {
     lineNumber,
     article,
@@ -2754,13 +2991,17 @@ function parsePriceImportRow(line, delimiter, columns, productByCode, lineNumber
     manufacturer: cellAt(cells, columns.manufacturer),
     category: cellAt(cells, columns.category),
     unit: cellAt(cells, columns.unit) || "vnt.",
-    cost: parseImportMoney(cellAt(cells, columns.cost)),
-    price: parseImportMoney(cellAt(cells, columns.price)),
-    vat: parseImportMoney(cellAt(cells, columns.vat)),
+    cost: costWasGross ? netImportAmount(rawCost, vatForGross) : rawCost,
+    grossCost: costWasGross ? rawCost : null,
+    costWasGross,
+    price: priceWasGross ? netImportAmount(rawPrice, vatForGross) : rawPrice,
+    grossPrice: priceWasGross ? rawPrice : null,
+    priceWasGross,
+    vat,
     status: "skip",
     reason: "",
     changes: [],
-    existingProduct: null,
+    existingProduct,
   };
 
   const validationMessage = priceImportRowValidationMessage(row);
@@ -2774,7 +3015,6 @@ function parsePriceImportRow(line, delimiter, columns, productByCode, lineNumber
     return row;
   }
 
-  row.existingProduct = productByCode.get(normalizeArticle(row.article)) ?? null;
   if (!row.existingProduct && !state.priceImport.options.createMissing) {
     row.reason = "Prekė nerasta. Įjunkite kūrimą, jeigu ją reikia pridėti.";
     return row;
@@ -2832,17 +3072,17 @@ function buildPriceImportChanges(row, existingProduct) {
 
   if (!existingProduct) {
     changes.push("Nauja prekė");
-    if (row.cost !== null) changes.push(`Savikaina ${formatMoney(row.cost)}`);
-    if (row.price !== null) changes.push(`Pardavimo kaina ${formatMoney(row.price)}`);
+    if (row.cost !== null) changes.push(`Savikaina ${formatPriceImportAmount(row, "cost")}`);
+    if (row.price !== null) changes.push(`Pardavimo kaina ${formatPriceImportAmount(row, "price")}`);
     if (row.vat !== null) changes.push(`PVM ${formatNumber(row.vat)} %`);
     return changes;
   }
 
   if (options.updateCost && row.cost !== null && !sameImportNumber(existingProduct.cost, row.cost)) {
-    changes.push(`Savikaina ${formatMoney(existingProduct.cost)} -> ${formatMoney(row.cost)}`);
+    changes.push(`Savikaina ${formatMoney(existingProduct.cost)} -> ${formatPriceImportAmount(row, "cost")}`);
   }
   if (options.updatePrice && row.price !== null && !sameImportNumber(existingProduct.price, row.price)) {
-    changes.push(`Pardavimo kaina ${formatMoney(existingProduct.price)} -> ${formatMoney(row.price)}`);
+    changes.push(`Pardavimo kaina ${formatMoney(existingProduct.price)} -> ${formatPriceImportAmount(row, "price")}`);
   }
   if (options.updateVat && row.vat !== null && !sameImportNumber(existingProduct.vat, row.vat)) {
     changes.push(`PVM ${formatNumber(existingProduct.vat)} % -> ${formatNumber(row.vat)} %`);
@@ -2857,16 +3097,36 @@ function buildPriceImportChanges(row, existingProduct) {
   return changes;
 }
 
-function findDuplicateImportArticles(rows) {
-  const seen = new Set();
-  const duplicates = new Set();
+function formatPriceImportAmount(row, field) {
+  const value = row[field];
+  const grossValue = field === "price" ? row.grossPrice : row.grossCost;
+  const wasGross = field === "price" ? row.priceWasGross : row.costWasGross;
+  if (!wasGross || grossValue === null) return formatMoney(value);
+  return `${formatMoney(value)} be PVM (${formatMoney(grossValue)} su PVM)`;
+}
+
+function markDuplicateImportRows(rows) {
+  const groups = new Map();
   rows.forEach((row) => {
     const article = normalizeArticle(row.article);
     if (!article) return;
-    if (seen.has(article)) duplicates.add(row.article);
-    seen.add(article);
+    if (!groups.has(article)) groups.set(article, []);
+    groups.get(article).push(row);
   });
-  return [...duplicates];
+
+  const warnings = [];
+  groups.forEach((group, normalizedArticle) => {
+    if (group.length < 2) return;
+    const keep = group.slice().reverse().find((row) => row.status === "update" || row.status === "create") ?? group[group.length - 1];
+    group.forEach((row) => {
+      if (row === keep) return;
+      row.status = "skip";
+      row.changes = [];
+      row.reason = `Kartojasi artikulas. Naudojama ${keep.lineNumber} eilutė.`;
+    });
+    warnings.push(`Kainininke kartojasi artikulas ${normalizedArticle}. Naudojama paskutinė tinkama eilutė.`);
+  });
+  return warnings;
 }
 
 function cleanImportCell(value) {
@@ -2894,7 +3154,8 @@ function normalizeImportText(value) {
 function parseImportMoney(value) {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
-  let normalized = raw.replace(/\s/g, "").replace(/[^\d,.-]/g, "");
+  const negative = /^\(.*\)$/.test(raw);
+  let normalized = raw.replace(/\s/g, "").replace(/[^\d,.'-]/g, "").replace(/'/g, "");
   if (!normalized || normalized === "-" || normalized === "." || normalized === ",") return null;
   const commaIndex = normalized.lastIndexOf(",");
   const dotIndex = normalized.lastIndexOf(".");
@@ -2906,7 +3167,53 @@ function parseImportMoney(value) {
     normalized = normalized.replace(",", ".");
   }
   const number = Number(normalized);
+  if (negative && Number.isFinite(number)) return -Math.abs(number);
   return Number.isFinite(number) ? number : null;
+}
+
+function parseImportVat(value) {
+  const number = parseImportMoney(value);
+  if (number === null) return null;
+  if (number > 0 && number <= 1) return roundImportNumber(number * 100);
+  return roundImportNumber(number);
+}
+
+function netImportAmount(amount, vatRate) {
+  const divisor = 1 + (Number(vatRate) || 0) / 100;
+  if (!Number.isFinite(divisor) || divisor <= 0) return amount;
+  return roundImportNumber(amount / divisor);
+}
+
+function roundImportNumber(value) {
+  return Math.round((Number(value) || 0) * 10000) / 10000;
+}
+
+function importHeaderLooksLikeGrossPrice(header) {
+  const normalized = normalizeImportText(header);
+  if (!normalized) return false;
+  if (importHeaderLooksLikeNetPrice(header)) return false;
+  return [
+    "su pvm",
+    "with vat",
+    "incl vat",
+    "including vat",
+    "gross",
+    "brutto",
+    "su mokesciais",
+    "su mokesčiais",
+  ].some((alias) => normalized.includes(normalizeImportText(alias)));
+}
+
+function importHeaderLooksLikeNetPrice(header) {
+  const normalized = normalizeImportText(header);
+  return [
+    "be pvm",
+    "without vat",
+    "excl vat",
+    "excluding vat",
+    "net",
+    "netto",
+  ].some((alias) => normalized.includes(normalizeImportText(alias)));
 }
 
 function sameImportNumber(left, right) {
@@ -3469,6 +3776,397 @@ function vatRegisterTotals(entries) {
   );
 }
 
+function accountingJournalEntries() {
+  const entries = [
+    ...purchaseAccountingEntries(),
+    ...salesAccountingEntries(),
+    ...paymentAccountingEntries(),
+    ...deliveryCostAccountingEntries(),
+  ];
+  return entries
+    .filter((entry) => entry.lines.length)
+    .sort((left, right) => `${right.date}${right.documentNumber}${right.id}`.localeCompare(`${left.date}${left.documentNumber}${left.id}`, "lt"));
+}
+
+function purchaseAccountingEntries() {
+  return state.documents
+    .filter((document) => document.status === STATUS_CONFIRMED)
+    .map((document) => {
+      const supplier = state.suppliers.find((item) => idsEqual(item.id, document.supplierId)) ?? {};
+      const supplierDocumentNumber = document.supplierDocumentNumber || document.number;
+      return createAccountingEntry({
+        id: `purchase-${document.id}`,
+        source: "purchase",
+        sourceLabel: "Pirkimas",
+        date: document.date,
+        documentId: document.id,
+        documentNumber: supplierDocumentNumber,
+        internalNumber: document.number,
+        partyName: supplier.name ?? supplierName(document.supplierId),
+        lines: [
+          accountingLine("2010", document.subtotal, 0, "Prekės pajamuotos į atsargas"),
+          accountingLine("2431", document.vat, 0, "Pirkimo PVM"),
+          accountingLine("4430", 0, document.total, "Skola tiekėjui"),
+        ],
+      });
+    });
+}
+
+function salesAccountingEntries() {
+  return state.salesDocuments
+    .filter((document) =>
+      ["PREPAYMENT_INVOICE", "INVOICE"].includes(document.type) &&
+      !["DRAFT", "CANCELLED"].includes(document.status),
+    )
+    .map((document) => createAccountingEntry({
+      id: `sales-${document.id}`,
+      source: "sales",
+      sourceLabel: salesTypeLabel(document.type),
+      date: document.date,
+      documentId: document.id,
+      documentNumber: document.number,
+      internalNumber: document.customerDocumentNumber,
+      partyName: customerName(document.customerId),
+      lines: [
+        accountingLine("2410", document.total, 0, "Pirkėjo skola"),
+        accountingLine("5000", 0, document.subtotal, "Pardavimo pajamos"),
+        accountingLine("4484", 0, document.vat, "Pardavimo PVM"),
+      ],
+    }));
+}
+
+function paymentAccountingEntries() {
+  return state.salesDocuments.flatMap((document) =>
+    (document.payments ?? []).map((payment) => {
+      const cashAccount = payment.method === "CASH" ? "2720" : "2710";
+      return createAccountingEntry({
+        id: `payment-${payment.id ?? `${document.id}-${payment.paymentDate}-${payment.amount}`}`,
+        source: "payment",
+        sourceLabel: "Mokėjimas",
+        date: payment.paymentDate,
+        documentId: document.id,
+        documentNumber: document.number,
+        internalNumber: "",
+        partyName: customerName(document.customerId),
+        lines: [
+          accountingLine(cashAccount, payment.amount, 0, PAYMENT_METHODS[payment.method] ?? "Kliento mokėjimas"),
+          accountingLine("2410", 0, payment.amount, "Skolos dengimas"),
+        ],
+      });
+    }),
+  );
+}
+
+function deliveryCostAccountingEntries() {
+  return state.salesDocuments
+    .filter((document) => document.type === "DELIVERY_NOTE" && document.status === "CONFIRMED")
+    .map((document) => {
+      const cost = deliveryDocumentCost(document);
+      return createAccountingEntry({
+        id: `delivery-${document.id}`,
+        source: "delivery",
+        sourceLabel: "Savikaina",
+        date: document.date,
+        documentId: document.id,
+        documentNumber: document.number,
+        internalNumber: document.customerDocumentNumber,
+        partyName: customerName(document.customerId),
+        lines: [
+          accountingLine("6000", cost, 0, "Parduotų prekių savikaina"),
+          accountingLine("2010", 0, cost, "Atsargų nurašymas"),
+        ],
+      });
+    });
+}
+
+function createAccountingEntry(entry) {
+  const lines = entry.lines
+    .filter((line) => roundMoney(line.debit) || roundMoney(line.credit))
+    .map((line, index) => ({
+      ...line,
+      entryId: entry.id,
+      lineId: `${entry.id}-${index + 1}`,
+      date: entry.date,
+      source: entry.source,
+      sourceLabel: entry.sourceLabel,
+      documentId: entry.documentId,
+      documentNumber: entry.documentNumber,
+      internalNumber: entry.internalNumber,
+      partyName: entry.partyName,
+    }));
+  return { ...entry, lines };
+}
+
+function accountingLine(accountCode, debit = 0, credit = 0, note = "") {
+  const account = accountByCode(accountCode);
+  return {
+    accountCode,
+    accountName: account?.name ?? "",
+    accountType: account?.type ?? "",
+    debit: roundMoney(debit),
+    credit: roundMoney(credit),
+    note,
+  };
+}
+
+function accountByCode(code) {
+  return ACCOUNTING_ACCOUNTS.find((account) => account.code === code);
+}
+
+function roundMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function deliveryDocumentCost(document) {
+  return document.lines.reduce((sum, line) => {
+    const product = findProduct(line.productId) ?? state.products.find((item) => item.article === line.article);
+    const unitCost = Number(product?.cost) || Number(line.unitCost) || 0;
+    return sum + (Number(line.quantity) || 0) * unitCost;
+  }, 0);
+}
+
+function filteredAccountingEntries() {
+  return accountingJournalEntries()
+    .filter(accountingEntryMatchesFilters)
+    .map((entry) => {
+      const lines = entry.lines.filter(accountingLineMatchesAccount);
+      return { ...entry, lines };
+    })
+    .filter((entry) => entry.lines.length);
+}
+
+function accountingReportModel() {
+  const entries = filteredAccountingEntries();
+  const lines = accountingLinesFromEntries(entries);
+  return {
+    entries,
+    lines,
+    totals: accountingLineTotals(lines),
+  };
+}
+
+function accountingLinesFromEntries(entries) {
+  return entries
+    .flatMap((entry) => entry.lines)
+    .sort((left, right) => `${right.date}${right.documentNumber}${right.lineId}`.localeCompare(`${left.date}${left.documentNumber}${left.lineId}`, "lt"));
+}
+
+function filteredAccountingLines() {
+  return accountingLinesFromEntries(filteredAccountingEntries());
+}
+
+function accountingEntryMatchesFilters(entry) {
+  const filters = state.accountingFilters;
+  return (
+    (!filters.from || entry.date >= filters.from) &&
+    (!filters.to || entry.date <= filters.to) &&
+    (filters.source === "ALL" || entry.source === filters.source)
+  );
+}
+
+function accountingLineMatchesAccount(line) {
+  return state.accountingFilters.account === "ALL" || line.accountCode === state.accountingFilters.account;
+}
+
+function accountingLineTotals(lines) {
+  return lines.reduce(
+    (totals, line) => ({
+      debit: totals.debit + Number(line.debit || 0),
+      credit: totals.credit + Number(line.credit || 0),
+    }),
+    { debit: 0, credit: 0 },
+  );
+}
+
+function accountingEntryTotals(entry) {
+  return accountingLineTotals(entry.lines);
+}
+
+function accountingPeriodSummary(model = accountingReportModel()) {
+  const lines = model.lines;
+  const totals = model.totals;
+  const revenue = accountCreditTotal(lines, "5000");
+  const costOfGoods = accountDebitTotal(lines, "6000");
+  const salesTotals = vatRegisterTotals(salesVatEntries().filter(accountingVatEntryMatchesDate));
+  const purchaseTotals = vatRegisterTotals(purchaseVatEntries().filter(accountingVatEntryMatchesDate));
+  const customerDebt = customerDebtSummaries().reduce((sum, row) => sum + Number(row.debt), 0);
+  const overdueDebt = customerDebtSummaries().reduce((sum, row) => sum + Number(row.overdueDebt), 0);
+  const supplierDebt = state.documents
+    .filter((document) => document.status === STATUS_CONFIRMED)
+    .reduce((sum, document) => sum + Number(document.total), 0);
+  const purchaseTotal = state.documents
+    .filter((document) => document.status === STATUS_CONFIRMED && accountingDateMatches(document.date))
+    .reduce((sum, document) => sum + Number(document.total), 0);
+  const paymentsReceived = lines
+    .filter((line) => ["2710", "2720"].includes(line.accountCode))
+    .reduce((sum, line) => sum + Number(line.debit), 0);
+
+  return {
+    entryCount: model.entries.length,
+    lineCount: lines.length,
+    debit: totals.debit,
+    credit: totals.credit,
+    debitCreditDifference: Math.abs(totals.debit - totals.credit),
+    revenue,
+    costOfGoods,
+    grossProfit: revenue - costOfGoods,
+    paymentsReceived,
+    purchaseTotal,
+    customerDebt,
+    overdueDebt,
+    supplierDebt,
+    outputVat: salesTotals.vat,
+    inputVat: purchaseTotals.vat,
+    payableVat: salesTotals.vat - purchaseTotals.vat,
+  };
+}
+
+function accountDebitTotal(lines, accountCode) {
+  return lines
+    .filter((line) => line.accountCode === accountCode)
+    .reduce((sum, line) => sum + Number(line.debit), 0);
+}
+
+function accountCreditTotal(lines, accountCode) {
+  return lines
+    .filter((line) => line.accountCode === accountCode)
+    .reduce((sum, line) => sum + Number(line.credit), 0);
+}
+
+function accountingDateMatches(date) {
+  return (
+    (!state.accountingFilters.from || date >= state.accountingFilters.from) &&
+    (!state.accountingFilters.to || date <= state.accountingFilters.to)
+  );
+}
+
+function accountingVatEntryMatchesDate(entry) {
+  return accountingDateMatches(entry.date);
+}
+
+function isafReadinessSummary() {
+  const salesEntries = salesVatEntries().filter(vatEntryMatchesDate);
+  const purchaseEntries = purchaseVatEntries().filter(vatEntryMatchesDate);
+  const entries = [...salesEntries, ...purchaseEntries];
+  const missingSettings = missingIsafSettings();
+  const entryIssues = entries.flatMap(isafEntryIssues);
+  const deadline = isafDeadlineForPeriod(state.vatFilters.to || state.vatFilters.from || todayDate());
+  const daysLeft = dateDiffInDays(todayDate(), deadline);
+
+  return {
+    salesEntries,
+    purchaseEntries,
+    entries,
+    missingSettings,
+    entryIssues,
+    deadline,
+    daysLeft,
+    hasNoInvoices: entries.length === 0,
+    ready: !missingSettings.length && !entryIssues.length,
+  };
+}
+
+function isafEntryIssues(entry) {
+  const issues = [];
+  const prefix = `${entry.register === "sales" ? "Išrašoma" : "Gaunama"} ${entry.number || "(be numerio)"}`;
+  [
+    [entry.date, "data"],
+    [entry.number, "dokumento Nr."],
+    [entry.partyName, "partneris"],
+    [entry.partyCode, "partnerio kodas"],
+    [entry.partyVatCode, "partnerio PVM kodas"],
+  ].forEach(([value, label]) => {
+    if (!String(value ?? "").trim()) issues.push(`${prefix}: ${label}`);
+  });
+  if (Number(entry.total) <= 0 && Number(entry.subtotal) <= 0 && Number(entry.vat) <= 0) {
+    issues.push(`${prefix}: sumos`);
+  }
+  return issues;
+}
+
+function isafDeadlineForPeriod(date) {
+  const [year, month] = String(date || todayDate()).slice(0, 7).split("-").map(Number);
+  const deadline = new Date(Date.UTC(year, month, ISAF_MONTHLY_DEADLINE_DAY));
+  return deadline.toISOString().slice(0, 10);
+}
+
+function dateDiffInDays(fromDate, toDate) {
+  const from = new Date(`${fromDate}T00:00:00Z`);
+  const to = new Date(`${toDate}T00:00:00Z`);
+  return Math.round((to - from) / 86400000);
+}
+
+function accountingControlRows(summary) {
+  const missing = missingIsafSettings();
+  const accountScoped = state.accountingFilters.account !== "ALL";
+  return [
+    {
+      done: accountScoped || summary.debitCreditDifference < 0.01,
+      title: accountScoped ? "Aktyvus sąskaitos filtras" : "DK debetas = kreditas",
+      meta: accountScoped ? "Nuimkite sąskaitos filtrą viso DK balansui tikrinti." : `Skirtumas ${formatMoney(summary.debitCreditDifference)}`,
+      action: accountScoped ? "noop" : "go-trial-balance",
+    },
+    {
+      done: !missing.length,
+      title: "Įmonės duomenys i.SAF",
+      meta: missing.length ? missing.join(", ") : "Paruošta eksportui",
+      action: "go-accounting-settings",
+    },
+    {
+      done: summary.overdueDebt <= 0,
+      title: "Pradelstos klientų skolos",
+      meta: summary.overdueDebt > 0 ? formatMoney(summary.overdueDebt) : "Pradelstų skolų nėra",
+      action: "go-customer-debts",
+    },
+    {
+      done: summary.entryCount > 0,
+      title: "DK įrašai laikotarpyje",
+      meta: summary.entryCount ? `${summary.entryCount} įrašai, ${summary.lineCount} eilutės` : "Nėra patvirtintų dokumentų",
+      action: "go-general-ledger",
+    },
+  ];
+}
+
+function trialBalanceRows(lines = filteredAccountingLines()) {
+  const rowsByCode = new Map(
+    ACCOUNTING_ACCOUNTS.map((account) => [
+      account.code,
+      {
+        code: account.code,
+        name: account.name,
+        type: account.type,
+        debit: 0,
+        credit: 0,
+      },
+    ]),
+  );
+
+  lines.forEach((line) => {
+    const row = rowsByCode.get(line.accountCode);
+    if (!row) return;
+    row.debit += Number(line.debit || 0);
+    row.credit += Number(line.credit || 0);
+  });
+
+  return [...rowsByCode.values()]
+    .map((row) => ({ ...row, debit: roundMoney(row.debit), credit: roundMoney(row.credit) }))
+    .filter((row) =>
+      state.accountingFilters.account !== "ALL"
+        ? row.code === state.accountingFilters.account
+        : row.debit || row.credit,
+    );
+}
+
+function trialBalanceTotals(rows) {
+  return rows.reduce(
+    (totals, row) => ({
+      debit: totals.debit + Number(row.debit || 0),
+      credit: totals.credit + Number(row.credit || 0),
+    }),
+    { debit: 0, credit: 0 },
+  );
+}
+
 function renderCustomerDebtRow(row) {
   return `
     <tr>
@@ -3768,6 +4466,355 @@ function renderAccountingSchemaNotice(title = "Buhalterija") {
   `;
 }
 
+function renderAccountingDashboardPage() {
+  if (!state.accountingSchemaReady) return renderAccountingSchemaNotice("Buhalterijos suvestinė");
+  const model = accountingReportModel();
+  const summary = accountingPeriodSummary(model);
+  const recentEntries = model.entries.slice(0, 8);
+  const checks = accountingControlRows(summary);
+
+  return `
+    ${renderHeader(
+      "Buhalterijos suvestinė",
+      "Pajamos, savikaina, PVM, skolos ir DK įrašai iš esamų dokumentų.",
+      `<div class="form-actions">
+        <button class="button secondary" data-page="general-ledger">Didžioji knyga</button>
+        <button class="button" data-page="trial-balance">Bandomasis balansas</button>
+      </div>`,
+      "Buhalterija",
+    )}
+    ${renderAccountingFiltersToolbar()}
+    <div class="summary-grid accounting-summary">
+      ${metricCard("Pardavimo pajamos", formatMoney(summary.revenue))}
+      ${metricCard("Savikaina", formatMoney(summary.costOfGoods))}
+      ${metricCard("Bendrasis pelnas", formatMoney(summary.grossProfit))}
+      ${metricCard("Mokėtinas PVM", formatMoney(summary.payableVat))}
+    </div>
+    <section class="accounting-layout">
+      <section class="table-panel accounting-main-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Periodinė suvestinė</h2>
+            <span>${escapeHtml(state.accountingFilters.from)} - ${escapeHtml(state.accountingFilters.to)}</span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="compact-report-table">
+            <tbody>
+              ${renderAccountingBreakdownRows(summary)}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section class="document-panel accounting-control-panel">
+        <div class="section-heading compact-heading">
+          <h2>Kontrolė</h2>
+          <span>${summary.entryCount} DK įrašai</span>
+        </div>
+        <div class="checklist">
+          ${checks.map(renderAccountingControlRow).join("")}
+        </div>
+      </section>
+    </section>
+    <section class="table-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Naujausi DK įrašai</h2>
+          <span>Pagal aktyvius filtrus</span>
+        </div>
+        <button class="link-button" data-page="general-ledger">Atidaryti visą DK</button>
+      </div>
+      <div class="table-scroll">
+        <table class="accounting-entry-table">
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Šaltinis</th>
+              <th>Dokumentas</th>
+              <th>Partneris</th>
+              <th class="num">Debetas</th>
+              <th class="num">Kreditas</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recentEntries.length ? recentEntries.map(renderRecentAccountingEntryRow).join("") : `<tr><td colspan="6"><div class="empty-state">Pasirinktame laikotarpyje DK įrašų nėra.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderGeneralLedgerPage() {
+  if (!state.accountingSchemaReady) return renderAccountingSchemaNotice("Didžioji knyga");
+  const model = accountingReportModel();
+  const lines = model.lines;
+  const totals = model.totals;
+
+  return `
+    ${renderHeader(
+      "Didžioji knyga",
+      "Automatinės korespondencijos iš pirkimų, pardavimų, mokėjimų ir savikainos.",
+      `<div class="form-actions">
+        <button class="button secondary" data-action="download-accounting-csv">CSV eksportas</button>
+        <button class="button" data-page="trial-balance">Bandomasis balansas</button>
+      </div>`,
+      "Buhalterija",
+    )}
+    ${renderAccountingFiltersToolbar()}
+    <div class="summary-grid">
+      ${metricCard("Eilučių", lines.length)}
+      ${metricCard("Debetas", formatMoney(totals.debit))}
+      ${metricCard("Kreditas", formatMoney(totals.credit))}
+      ${metricCard("Skirtumas", formatMoney(Math.abs(totals.debit - totals.credit)))}
+    </div>
+    <section class="table-panel">
+      <div class="table-scroll">
+        <table class="general-ledger-table">
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Šaltinis</th>
+              <th>Dokumentas</th>
+              <th>Partneris</th>
+              <th>Sąskaita</th>
+              <th class="num">Debetas</th>
+              <th class="num">Kreditas</th>
+              <th>Pastaba</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${renderAccountingLineRows(lines)}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderTrialBalancePage() {
+  if (!state.accountingSchemaReady) return renderAccountingSchemaNotice("Bandomasis balansas");
+  const model = accountingReportModel();
+  const rows = trialBalanceRows(model.lines);
+  const totals = trialBalanceTotals(rows);
+
+  return `
+    ${renderHeader(
+      "Bandomasis balansas",
+      "Sąskaitų debeto, kredito ir likučio patikra pagal aktyvų laikotarpį.",
+      `<div class="form-actions">
+        <button class="button secondary" data-page="accounting-dashboard">Suvestinė</button>
+        <button class="button" data-page="general-ledger">Didžioji knyga</button>
+      </div>`,
+      "Buhalterija",
+    )}
+    ${renderAccountingFiltersToolbar()}
+    <div class="summary-grid">
+      ${metricCard("Debetas", formatMoney(totals.debit))}
+      ${metricCard("Kreditas", formatMoney(totals.credit))}
+      ${metricCard("Skirtumas", formatMoney(Math.abs(totals.debit - totals.credit)))}
+      ${metricCard("Sąskaitos", rows.length)}
+    </div>
+    <section class="table-panel">
+      <div class="table-scroll">
+        <table class="trial-balance-table">
+          <thead>
+            <tr>
+              <th>Kodas</th>
+              <th>Sąskaita</th>
+              <th>Tipas</th>
+              <th class="num">Debetas</th>
+              <th class="num">Kreditas</th>
+              <th class="num">Likutis</th>
+              <th>Kryptis</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows.map(renderTrialBalanceRow).join("") : `<tr><td colspan="7"><div class="empty-state">Pasirinktame laikotarpyje sąskaitų apyvartos nėra.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderAccountingFiltersToolbar() {
+  return `
+    <div class="toolbar document-toolbar accounting-toolbar">
+      <div class="filter-row">
+        <label class="form-field compact-field">
+          <span class="label">Nuo</span>
+          <input class="input" type="date" data-accounting-filter="from" value="${escapeHtml(state.accountingFilters.from)}" />
+        </label>
+        <label class="form-field compact-field">
+          <span class="label">Iki</span>
+          <input class="input" type="date" data-accounting-filter="to" value="${escapeHtml(state.accountingFilters.to)}" />
+        </label>
+        <label class="form-field compact-field accounting-account-filter">
+          <span class="label">Sąskaita</span>
+          <select class="select" data-accounting-filter="account">
+            <option value="ALL" ${state.accountingFilters.account === "ALL" ? "selected" : ""}>Visos sąskaitos</option>
+            ${ACCOUNTING_ACCOUNTS.map((account) => `<option value="${account.code}" ${state.accountingFilters.account === account.code ? "selected" : ""}>${account.code} · ${escapeHtml(account.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="form-field compact-field">
+          <span class="label">Šaltinis</span>
+          <select class="select" data-accounting-filter="source">
+            ${Object.entries(ACCOUNTING_SOURCE_TYPES).map(([source, label]) => `<option value="${source}" ${state.accountingFilters.source === source ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="toolbar-right muted">Pagal patvirtintus dokumentus</div>
+    </div>
+  `;
+}
+
+function renderAccountingBreakdownRows(summary) {
+  const rows = [
+    ["Pardavimo pajamos", summary.revenue, "Kredituojamos sąskaitos 5000"],
+    ["Parduotų prekių savikaina", summary.costOfGoods, "Debetuojama sąskaita 6000"],
+    ["Bendrasis pelnas", summary.grossProfit, "Pajamos minus savikaina"],
+    ["Gauti klientų mokėjimai", summary.paymentsReceived, "Bankas ir kasa"],
+    ["Pirkimų suma", summary.purchaseTotal, "Patvirtinti pajamavimai"],
+    ["Pirkėjų skola", summary.customerDebt, "Neapmokėti klientų dokumentai"],
+    ["Skolos tiekėjams", summary.supplierDebt, "Patvirtinti pirkimai be apmokėjimų modulio"],
+    ["PVM pozicija", summary.payableVat, "Pardavimo PVM minus pirkimo PVM"],
+  ];
+
+  return rows.map(([label, value, note]) => `
+    <tr>
+      <td><strong>${escapeHtml(label)}</strong><div class="muted small-text">${escapeHtml(note)}</div></td>
+      <td class="num"><strong>${formatMoney(value)}</strong></td>
+    </tr>
+  `).join("");
+}
+
+function renderAccountingControlRow(item) {
+  return `
+    <button class="check-row ${item.done ? "done" : ""}" data-action="${item.action || "noop"}">
+      <span class="check-mark">${item.done ? "✓" : "!"}</span>
+      <strong>${escapeHtml(item.title)}</strong>
+      <em>${escapeHtml(item.meta)}</em>
+    </button>
+  `;
+}
+
+function renderRecentAccountingEntryRow(entry) {
+  const totals = accountingEntryTotals(entry);
+  return `
+    <tr>
+      <td>${formatDate(entry.date)}</td>
+      <td>${escapeHtml(entry.sourceLabel)}</td>
+      <td>${renderAccountingDocumentButton(entry)}</td>
+      <td>${escapeHtml(entry.partyName || "-")}</td>
+      <td class="num">${formatMoney(totals.debit)}</td>
+      <td class="num">${formatMoney(totals.credit)}</td>
+    </tr>
+  `;
+}
+
+function renderAccountingLineRows(lines) {
+  return lines.length
+    ? lines.map((line) => `
+        <tr>
+          <td>${formatDate(line.date)}</td>
+          <td>${escapeHtml(line.sourceLabel)}</td>
+          <td>${renderAccountingDocumentButton(line)}</td>
+          <td>${escapeHtml(line.partyName || "-")}</td>
+          <td><strong>${escapeHtml(line.accountCode)}</strong><div class="muted small-text">${escapeHtml(line.accountName)}</div></td>
+          <td class="num">${line.debit ? formatMoney(line.debit) : "-"}</td>
+          <td class="num">${line.credit ? formatMoney(line.credit) : "-"}</td>
+          <td>${escapeHtml(line.note || "-")}</td>
+        </tr>
+      `).join("")
+    : `<tr><td colspan="8"><div class="empty-state">Pasirinktame laikotarpyje DK eilučių nėra.</div></td></tr>`;
+}
+
+function renderTrialBalanceRow(row) {
+  const balance = row.debit - row.credit;
+  const direction = Math.abs(balance) < 0.005 ? "-" : balance > 0 ? "Debetas" : "Kreditas";
+  return `
+    <tr>
+      <td><strong>${escapeHtml(row.code)}</strong></td>
+      <td>${escapeHtml(row.name)}</td>
+      <td>${escapeHtml(row.type)}</td>
+      <td class="num">${formatMoney(row.debit)}</td>
+      <td class="num">${formatMoney(row.credit)}</td>
+      <td class="num"><strong>${formatMoney(Math.abs(balance))}</strong></td>
+      <td>${direction}</td>
+    </tr>
+  `;
+}
+
+function renderAccountingDocumentButton(entry) {
+  if (!entry.documentId) return `<strong>${escapeHtml(entry.documentNumber || "-")}</strong>`;
+  const action = entry.source === "purchase" ? "view-document" : "view-sales-document";
+  return `
+    <button class="plain-link" data-action="${action}" data-id="${entry.documentId}">
+      ${escapeHtml(entry.documentNumber || "-")}
+    </button>
+    ${entry.internalNumber && entry.internalNumber !== entry.documentNumber ? `<div class="muted small-text">Vidinis: ${escapeHtml(entry.internalNumber)}</div>` : ""}
+  `;
+}
+
+function renderIsafReadinessPanel(readiness) {
+  const issuePreview = readiness.entryIssues.slice(0, 5);
+  const hiddenIssueCount = Math.max(0, readiness.entryIssues.length - issuePreview.length);
+  const deadlineMeta =
+    readiness.daysLeft < 0
+      ? `Terminas praėjo: ${formatDate(readiness.deadline)}`
+      : readiness.daysLeft === 0
+        ? "Terminas šiandien"
+        : `Iki ${formatDate(readiness.deadline)} liko ${readiness.daysLeft} d.`;
+  const rows = [
+    {
+      done: readiness.daysLeft >= 0,
+      title: "i.SAF terminas",
+      meta: deadlineMeta,
+    },
+    {
+      done: !readiness.missingSettings.length,
+      title: "Įmonės rekvizitai",
+      meta: readiness.missingSettings.length ? readiness.missingSettings.join(", ") : "Paruošta",
+      action: "go-accounting-settings",
+    },
+    {
+      done: !readiness.entryIssues.length,
+      title: "Sąskaitų rekvizitai",
+      meta: readiness.entryIssues.length
+        ? `${readiness.entryIssues.length} taisytini laukai`
+        : `${readiness.salesEntries.length} išrašomos, ${readiness.purchaseEntries.length} gaunamos`,
+    },
+    {
+      done: true,
+      title: readiness.hasNoInvoices ? "Tuščias registras" : "Registro apimtis",
+      meta: readiness.hasNoInvoices ? "Laikotarpiui nėra sąskaitų, registras vis tiek žymimas kontrolei" : `${readiness.entries.length} PVM sąskaitų`,
+    },
+  ];
+
+  return `
+    <section class="document-panel isaf-readiness-panel">
+      <div class="section-heading compact-heading">
+        <h2>i.SAF kontrolė</h2>
+        <span>${readiness.ready ? "Paruošta" : "Reikia patikros"}</span>
+      </div>
+      <div class="isaf-readiness-grid">
+        <div class="checklist">
+          ${rows.map(renderAccountingControlRow).join("")}
+        </div>
+        <div class="isaf-issue-box">
+          <strong>Rekvizitų patikra</strong>
+          ${
+            issuePreview.length
+              ? `<ul>${issuePreview.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}${hiddenIssueCount ? `<li>Dar ${hiddenIssueCount}...</li>` : ""}</ul>`
+              : `<p>Partnerių ir dokumentų laukai užpildyti.</p>`
+          }
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderVatRegistersPage() {
   if (!state.accountingSchemaReady) return renderAccountingSchemaNotice("PVM registrai");
   const entries = filteredVatEntries();
@@ -3775,6 +4822,7 @@ function renderVatRegistersPage() {
   const salesTotals = vatRegisterTotals(salesVatEntries().filter(vatEntryMatchesDate));
   const purchaseTotals = vatRegisterTotals(purchaseVatEntries().filter(vatEntryMatchesDate));
   const payableVat = salesTotals.vat - purchaseTotals.vat;
+  const readiness = isafReadinessSummary();
 
   return `
     ${renderHeader(
@@ -3787,6 +4835,7 @@ function renderVatRegistersPage() {
       "Buhalterija",
     )}
     ${renderVatFiltersToolbar()}
+    ${renderIsafReadinessPanel(readiness)}
     <div class="summary-grid">
       ${metricCard("Įrašų", entries.length)}
       ${metricCard("Pardavimo PVM", formatMoney(salesTotals.vat))}
@@ -3826,6 +4875,7 @@ function renderIsafExportPage() {
   const purchaseEntries = purchaseVatEntries().filter(vatEntryMatchesDate);
   const entries = filteredVatEntries();
   const missing = missingIsafSettings();
+  const readiness = isafReadinessSummary();
   const exportDisabled = missing.length ? "disabled" : "";
 
   return `
@@ -3839,6 +4889,7 @@ function renderIsafExportPage() {
       "Buhalterija",
     )}
     ${renderVatFiltersToolbar()}
+    ${renderIsafReadinessPanel(readiness)}
     ${
       missing.length
         ? `<div class="auth-message">Užpildykite prieš eksportą: ${missing.map(escapeHtml).join(", ")}.</div>`
@@ -4326,6 +5377,27 @@ function downloadVatCsv() {
   ];
   const csv = rows.map((row) => row.map(csvCell).join(";")).join("\n");
   downloadTextFile(`pvm-registrai-${state.vatFilters.from}-${state.vatFilters.to}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8");
+}
+
+function downloadAccountingCsv() {
+  const lines = filteredAccountingLines();
+  const rows = [
+    ["Data", "Šaltinis", "Dokumento Nr.", "Partneris", "Sąskaitos kodas", "Sąskaita", "Debetas", "Kreditas", "Pastaba"],
+    ...lines.map((line) => [
+      line.date,
+      line.sourceLabel,
+      line.documentNumber,
+      line.partyName,
+      line.accountCode,
+      line.accountName,
+      toDecimal(line.debit),
+      toDecimal(line.credit),
+      line.note,
+    ]),
+  ];
+  const csv = rows.map((row) => row.map(csvCell).join(";")).join("\n");
+  downloadTextFile(`didzioji-knyga-${state.accountingFilters.from}-${state.accountingFilters.to}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8");
+  setToast("Didžiosios knygos CSV paruoštas.");
 }
 
 function downloadIsafXml() {
@@ -5227,9 +6299,11 @@ function bindEvents() {
 
   bindPriceImportEvents();
 
-  document.querySelector("[data-global-search]")?.addEventListener("input", (event) => {
-    state.globalSearchQuery = event.target.value;
-    render();
+  document.querySelectorAll("[data-global-search]").forEach((input) => {
+    input.addEventListener("input", (event) => {
+      state.globalSearchQuery = event.target.value;
+      render();
+    });
   });
 
   document.querySelector("[data-numbering-date]")?.addEventListener("change", (event) => {
@@ -5240,6 +6314,15 @@ function bindEvents() {
   document.querySelectorAll("[data-vat-filter]").forEach((input) => {
     const handler = () => {
       state.vatFilters[input.dataset.vatFilter] = input.value;
+      render();
+    };
+    input.addEventListener("input", handler);
+    input.addEventListener("change", handler);
+  });
+
+  document.querySelectorAll("[data-accounting-filter]").forEach((input) => {
+    const handler = () => {
+      state.accountingFilters[input.dataset.accountingFilter] = input.value;
       render();
     };
     input.addEventListener("input", handler);
@@ -5337,6 +6420,11 @@ function bindUnsavedFormRetention() {
 function bindPriceImportEvents() {
   document.querySelector("[data-price-import-text]")?.addEventListener("input", (event) => {
     state.priceImport.text = event.target.value;
+    state.priceImport.sourceName = "";
+    state.priceImport.sourceType = "paste";
+    state.priceImport.sourceMeta = "";
+    state.priceImport.sheetName = "";
+    state.priceImport.sheetNames = [];
   });
 
   document.querySelector("[data-price-import-file]")?.addEventListener("change", async (event) => {
@@ -5344,9 +6432,15 @@ function bindPriceImportEvents() {
     if (!file) return;
     try {
       state.priceImport.errors = [];
-      state.priceImport.text = await readPriceImportFile(file);
+      const imported = await readPriceImportFile(file);
+      state.priceImport.text = imported.text;
+      state.priceImport.sourceName = imported.sourceName;
+      state.priceImport.sourceType = imported.sourceType;
+      state.priceImport.sourceMeta = imported.sourceMeta || "";
+      state.priceImport.sheetName = imported.sheetName || "";
+      state.priceImport.sheetNames = imported.sheetNames || [];
       parseCurrentPriceImport();
-      setToast(`Failas „${file.name}“ nuskaitytas.`);
+      setToast(`Failas „${file.name}“ nuskaitytas${imported.sheetName ? `, lapas „${imported.sheetName}“` : ""}.`);
     } catch (error) {
       state.priceImport.rows = [];
       state.priceImport.errors = [error.message || "Nepavyko nuskaityti kainininko failo."];
@@ -5489,6 +6583,12 @@ async function handleAction(event) {
   if (action === "go-accounting-settings") {
     state.page = "accounting-settings";
   }
+  if (action === "go-general-ledger") {
+    state.page = "general-ledger";
+  }
+  if (action === "go-trial-balance") {
+    state.page = "trial-balance";
+  }
   if (action === "go-isaf-month") {
     state.vatFilters = { from: monthStartDate(), to: todayDate(), register: "ALL" };
     state.page = "isaf-export";
@@ -5529,6 +6629,10 @@ async function handleAction(event) {
   }
   if (action === "download-vat-csv") {
     downloadVatCsv();
+    return;
+  }
+  if (action === "download-accounting-csv") {
+    downloadAccountingCsv();
     return;
   }
   if (action === "download-isaf-xml") {

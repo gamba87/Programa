@@ -165,7 +165,19 @@ function fullImportReadMapping() {
   };
 
   if (columns.cost < 0) options.updateCost = false;
-  return { columns, options };
+
+  return {
+    columns,
+    options,
+    costIncludesVat: fullImportColumnLooksWithVat("cost", columns.cost),
+    priceIncludesVat: fullImportColumnLooksWithVat("price", columns.price),
+  };
+}
+
+function fullImportColumnLooksWithVat(field, columnIndex) {
+  if (columnIndex < 0) return false;
+  const option = Array.from(fullImportSelect(field)?.options || []).find((item) => Number(item.value) === columnIndex);
+  return fullImportLooksWithVat(option);
 }
 
 function fullImportHeaderLabels() {
@@ -204,8 +216,10 @@ function fullImportCell(cells, index) {
 function fullImportMoney(value) {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
-  let normalized = raw.replace(/\s/g, "").replace(/[^\d,.-]/g, "");
+  const negative = /^\(.*\)$/.test(raw);
+  let normalized = raw.replace(/\s/g, "").replace(/[^\d,.'-]/g, "");
   if (!normalized || normalized === "-" || normalized === "." || normalized === ",") return null;
+  normalized = normalized.replace(/'/g, "");
   const commaIndex = normalized.lastIndexOf(",");
   const dotIndex = normalized.lastIndexOf(".");
   if (commaIndex >= 0 && dotIndex >= 0) {
@@ -216,7 +230,26 @@ function fullImportMoney(value) {
     normalized = normalized.replace(",", ".");
   }
   const number = Number(normalized);
-  return Number.isFinite(number) ? number : null;
+  if (!Number.isFinite(number)) return null;
+  return negative ? -Math.abs(number) : number;
+}
+
+function fullImportVat(value) {
+  const number = fullImportMoney(value);
+  if (number === null) return null;
+  if (number > 0 && number <= 1) return fullImportRound(number * 100);
+  return fullImportRound(number);
+}
+
+function fullImportNetAmount(amount, vatRate) {
+  if (amount === null) return null;
+  const rate = Number.isFinite(Number(vatRate)) ? Number(vatRate) : 21;
+  if (rate <= -100) return amount;
+  return fullImportRound(amount / (1 + rate / 100));
+}
+
+function fullImportRound(value) {
+  return Number(Number(value).toFixed(4));
 }
 
 function fullImportSafeDecimal(value, fallback = 0, max = 1000000) {
@@ -225,7 +258,7 @@ function fullImportSafeDecimal(value, fallback = 0, max = 1000000) {
   return Number(number.toFixed(4));
 }
 
-function fullImportRows(text, columns, existingByArticle) {
+function fullImportRows(text, columns, existingByArticle, mapping = {}) {
   const normalizedText = fullImportFlattenQuotedRows(text).replace(/^\uFEFF/, "").trim();
   const lines = normalizedText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (!lines.length) return { rows: [], sourceRows: 0 };
@@ -236,10 +269,13 @@ function fullImportRows(text, columns, existingByArticle) {
   const dataRows = parsed.slice(headerIndex + 1);
   const rows = dataRows.map((cells, offset) => {
     const article = fullImportCell(cells, columns.article);
-    const cost = fullImportMoney(fullImportCell(cells, columns.cost));
-    const price = fullImportMoney(fullImportCell(cells, columns.price));
-    const vat = fullImportMoney(fullImportCell(cells, columns.vat));
     const existing = existingByArticle.get(fullImportArticle(article)) || null;
+    const vat = fullImportVat(fullImportCell(cells, columns.vat));
+    const vatForGross = vat ?? existing?.vat_rate ?? 21;
+    const rawCost = fullImportMoney(fullImportCell(cells, columns.cost));
+    const rawPrice = fullImportMoney(fullImportCell(cells, columns.price));
+    const cost = mapping.costIncludesVat ? fullImportNetAmount(rawCost, vatForGross) : rawCost;
+    const price = mapping.priceIncludesVat ? fullImportNetAmount(rawPrice, vatForGross) : rawPrice;
     return {
       lineNumber: headerIndex + offset + 2,
       article,
@@ -248,7 +284,9 @@ function fullImportRows(text, columns, existingByArticle) {
       category: fullImportCell(cells, columns.category),
       unit: fullImportCell(cells, columns.unit) || existing?.unit || "vnt.",
       cost,
+      grossCost: mapping.costIncludesVat ? rawCost : null,
       price,
+      grossPrice: mapping.priceIncludesVat ? rawPrice : null,
       vat,
       existing,
     };
@@ -359,7 +397,8 @@ async function fullImportApply(button) {
 
   const textarea = document.querySelector("[data-price-import-text]");
   const text = textarea?.value || "";
-  const { columns, options } = fullImportReadMapping();
+  const mapping = fullImportReadMapping();
+  const { columns, options } = mapping;
   if (!text.trim()) {
     fullImportShowToast("Pirmiausia įkelkite kainininko failą.", "error");
     return;
@@ -376,7 +415,7 @@ async function fullImportApply(button) {
   try {
     const existingProducts = await fullImportFetchAllProducts();
     const existingByArticle = new Map(existingProducts.map((product) => [fullImportArticle(product.article_code), product]));
-    const parsed = fullImportRows(text, columns, existingByArticle);
+    const parsed = fullImportRows(text, columns, existingByArticle, mapping);
     const skipped = [];
     const byArticle = new Map();
 
