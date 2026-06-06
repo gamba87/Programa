@@ -61,6 +61,10 @@ const ACCOUNTING_SOURCE_TYPES = {
   delivery: "Savikaina",
 };
 const ISAF_MONTHLY_DEADLINE_DAY = 20;
+const PYTHON_API_ENDPOINTS = {
+  accountingReport: "/api/accounting/report",
+  isafXml: "/api/isaf/xml",
+};
 const database = createSupabaseDatabase(supabase, isSupabaseConfigured);
 
 const sampleSuppliers = [
@@ -5358,8 +5362,54 @@ function exportSalesExcel() {
   URL.revokeObjectURL(url);
 }
 
-function downloadVatCsv() {
-  const entries = filteredVatEntries();
+function pythonAccountingPayload() {
+  return {
+    products: state.products,
+    suppliers: state.suppliers,
+    documents: state.documents,
+    customers: state.customers,
+    salesDocuments: state.salesDocuments,
+    accountingSettings: state.accountingSettings,
+  };
+}
+
+async function fetchPythonAccountingReport(filters = state.accountingFilters) {
+  const response = await fetch(PYTHON_API_ENDPOINTS.accountingReport, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: pythonAccountingPayload(), filters }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+async function fetchPythonIsafXml(filters = state.vatFilters) {
+  const response = await fetch(PYTHON_API_ENDPOINTS.isafXml, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: pythonAccountingPayload(), filters }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.text();
+}
+
+async function accountingReportWithFallback(filters = state.accountingFilters) {
+  try {
+    const report = await fetchPythonAccountingReport(filters);
+    return { report, source: "Python" };
+  } catch (error) {
+    console.warn("Python accounting API unavailable, using browser fallback.", error);
+    return { report: null, source: "naršyklės skaičiavimas" };
+  }
+}
+
+async function downloadVatCsv() {
+  const { report, source } = await accountingReportWithFallback({
+    ...state.vatFilters,
+    account: "ALL",
+    source: "ALL",
+  });
+  const entries = report?.vatEntries ?? filteredVatEntries();
   const rows = [
     ["Registras", "Data", "Dokumento Nr.", "Partneris", "Kodas", "PVM kodas", "Suma be PVM", "PVM", "Bendra suma", "Šaltinis"],
     ...entries.map((entry) => [
@@ -5377,10 +5427,12 @@ function downloadVatCsv() {
   ];
   const csv = rows.map((row) => row.map(csvCell).join(";")).join("\n");
   downloadTextFile(`pvm-registrai-${state.vatFilters.from}-${state.vatFilters.to}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8");
+  setToast(`PVM CSV paruoštas (${source}).`);
 }
 
-function downloadAccountingCsv() {
-  const lines = filteredAccountingLines();
+async function downloadAccountingCsv() {
+  const { report, source } = await accountingReportWithFallback(state.accountingFilters);
+  const lines = report?.journalLines ?? filteredAccountingLines();
   const rows = [
     ["Data", "Šaltinis", "Dokumento Nr.", "Partneris", "Sąskaitos kodas", "Sąskaita", "Debetas", "Kreditas", "Pastaba"],
     ...lines.map((line) => [
@@ -5397,18 +5449,26 @@ function downloadAccountingCsv() {
   ];
   const csv = rows.map((row) => row.map(csvCell).join(";")).join("\n");
   downloadTextFile(`didzioji-knyga-${state.accountingFilters.from}-${state.accountingFilters.to}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8");
-  setToast("Didžiosios knygos CSV paruoštas.");
+  setToast(`Didžiosios knygos CSV paruoštas (${source}).`);
 }
 
-function downloadIsafXml() {
+async function downloadIsafXml() {
   const missing = missingIsafSettings();
   if (missing.length) {
     setToast(`Užpildykite: ${missing.join(", ")}.`);
     return;
   }
-  const xml = buildIsafXml();
+  let source = "Python";
+  let xml = "";
+  try {
+    xml = await fetchPythonIsafXml(state.vatFilters);
+  } catch (error) {
+    console.warn("Python i.SAF API unavailable, using browser fallback.", error);
+    source = "naršyklės skaičiavimas";
+    xml = buildIsafXml();
+  }
   downloadTextFile(`isaf-${state.vatFilters.from}-${state.vatFilters.to}.xml`, xml, "application/xml;charset=utf-8");
-  setToast("i.SAF XML rinkmena paruošta atsisiuntimui.");
+  setToast(`i.SAF XML rinkmena paruošta (${source}).`);
 }
 
 function missingIsafSettings() {
@@ -6628,15 +6688,15 @@ async function handleAction(event) {
     return;
   }
   if (action === "download-vat-csv") {
-    downloadVatCsv();
+    await downloadVatCsv();
     return;
   }
   if (action === "download-accounting-csv") {
-    downloadAccountingCsv();
+    await downloadAccountingCsv();
     return;
   }
   if (action === "download-isaf-xml") {
-    downloadIsafXml();
+    await downloadIsafXml();
     return;
   }
   if (action === "edit-product") openProductModal(state.products.find((item) => idsEqual(item.id, id)));

@@ -3,6 +3,11 @@ from __future__ import annotations
 import unittest
 
 from backend.accounting_engine import build_isaf_xml, build_report
+from backend.http_handlers import JsonEndpoint
+from backend.server import AccountingHandler
+from api.accounting.report import handler as accounting_report_handler
+from api.health import handler as health_handler
+from api.isaf.xml import handler as isaf_xml_handler
 
 
 def sample_payload():
@@ -99,7 +104,12 @@ class AccountingEngineTest(unittest.TestCase):
         self.assertIn("SF-2026-05-001", xml)
         self.assertIn("SUP-001", xml)
 
+    def test_vercel_python_handlers_are_importable(self):
+        self.assertTrue(hasattr(health_handler, "do_GET"))
+        self.assertTrue(hasattr(accounting_report_handler, "do_POST"))
+        self.assertTrue(hasattr(isaf_xml_handler, "do_POST"))
+        self.assertTrue(issubclass(AccountingHandler, JsonEndpoint))
+
 
 if __name__ == "__main__":
     unittest.main()
-
